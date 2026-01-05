@@ -31,7 +31,7 @@ jobs:
             fi
             
             # Verify Bicep installation
-            bicep --version
+            az bicep version
             
       # 1. LINTING - Check Bicep syntax and style
       - name: Lint Bicep files
@@ -84,7 +84,7 @@ jobs:
             # az deployment group validate \
             #   --resource-group "test-validation-rg" \
             #   --template-file main.json \
-            #   --parameters @environments/dev/parameters.json \
+            #   --parameters @environments/dev/main.bicepparam \
             #   --no-pretty-print || echo "Validation completed"
             
       # 4. WHAT-IF ANALYSIS (without Azure login)
