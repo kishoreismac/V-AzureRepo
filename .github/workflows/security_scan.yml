@@ -100,7 +100,7 @@ jobs:
           
       # 3. BASIC COST CHECK (if Infracost not available)
       - name: Basic Cost Awareness Check
-        if: github.event_name == 'pull_request' && ${{ secrets.INFRACOST_API_KEY }} == ''
+        if: github.event_name == 'pull_request' && secrets.INFRACOST_API_KEY == ''
         run: |
           echo "=== Basic Cost Awareness Check ==="
           echo "ℹ️ INFRACOST_API_KEY not set. Using basic cost check."
