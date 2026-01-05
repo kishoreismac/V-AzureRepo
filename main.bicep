@@ -49,9 +49,9 @@ param zoneRedundant bool = false
 @description('Id of the user running this template (dev/test). Leave empty if not needed.')
 param principalId string = ''
 
-// ----------------------------
+// ---------------------------
 // Naming + Tags
-// ----------------------------
+// ---------------------------
 var abbrs = loadJsonContent('./abbreviations.json')
 
 // token used for uniqueness (keep short for storage accounts)
