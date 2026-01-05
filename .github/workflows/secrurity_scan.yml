@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'infra/**'
+      - '**'
       - '.github/workflows/security-scan.yml'
   schedule:
     - cron: '0 9 * * 1'  # Weekly on Monday at 9 AM
