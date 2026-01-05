@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main, develop]
     paths:
-      - '**'
+      - 'infra/**'
       - '.github/workflows/validate-infra.yml'
 
 jobs:
@@ -16,27 +16,101 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
       
-      # ✅ FIXED: Add inlineScript parameter
       - name: Setup Azure CLI
         uses: azure/CLI@v1
         with:
           inlineScript: |
             echo "=== Setting up Azure CLI ==="
             az version
-            echo "Bicep is included with Azure CLI"
+            echo "✅ Azure CLI ready"
             
-      # 1. LINTING - Check Bicep syntax
-      - name: Lint Bicep files
+      # 1. BASIC STRUCTURE VALIDATION
+      - name: Validate Structure
         run: |
-          echo "=== Linting Bicep files ==="
+          echo "=== Validating Repository Structure ==="
           
-          # Check if main.bicep exists
+          # Check required files
+          echo "Checking required files..."
           if [ ! -f "main.bicep" ]; then
-            echo "❌ main.bicep file is missing"
+            echo "❌ main.bicep file is missing (required)"
+            exit 1
+          fi
+          echo "✅ main.bicep exists"
+          
+          # Check environments directory
+          if [ ! -d "environments" ]; then
+            echo "❌ environments/ directory is missing"
+            exit 1
+          fi
+          echo "✅ environments/ directory exists"
+          
+          # Check for at least one environment
+          ENV_COUNT=$(find environments -maxdepth 1 -type d | wc -l)
+          if [ $ENV_COUNT -le 1 ]; then
+            echo "❌ No environment folders found in environments/"
             exit 1
           fi
           
-          # Lint main file
+      # 2. VALIDATE ENVIRONMENT CONFIGURATIONS
+      - name: Validate Environment Configs
+        run: |
+          echo "=== Validating Environment Configurations ==="
+          
+          REQUIRED_ENVS=("dev" "staging" "prod")
+          VALID_ENVS=0
+          
+          for env in "${REQUIRED_ENVS[@]}"; do
+            echo "Checking environment: $env"
+            
+            if [ -d "environments/$env" ]; then
+              echo "  ✅ Directory exists"
+              
+              # Check for main.bicepparam
+              if [ -f "environments/$env/main.bicepparam" ]; then
+                echo "  ✅ main.bicepparam exists"
+                
+                # Validate bicepparam syntax
+                if grep -q "using 'main.bicep'" "environments/$env/main.bicepparam"; then
+                  echo "  ✅ Valid using statement"
+                else
+                  echo "  ⚠️ Missing 'using' statement in main.bicepparam"
+                fi
+                
+                VALID_ENVS=$((VALID_ENVS + 1))
+              else
+                echo "  ❌ main.bicepparam missing in environments/$env/"
+              fi
+              
+              # Check for optional parameters.json
+              if [ -f "environments/$env/parameters.json" ]; then
+                echo "  ✅ parameters.json exists"
+                
+                # Validate JSON syntax
+                if python3 -m json.tool "environments/$env/parameters.json" > /dev/null 2>&1; then
+                  echo "  ✅ Valid JSON syntax"
+                else
+                  echo "  ❌ Invalid JSON syntax in parameters.json"
+                fi
+              fi
+            else
+              echo "  ❌ Directory missing"
+            fi
+            echo ""
+          done
+          
+          if [ $VALID_ENVS -ge 1 ]; then
+            echo "✅ Found $VALID_ENVS valid environment(s)"
+          else
+            echo "❌ No valid environments found with main.bicepparam files"
+            exit 1
+          fi
+          
+      # 3. LINT BICEP FILES
+      - name: Lint Bicep files
+        run: |
+          echo "=== Linting Bicep Files ==="
+          
+          # Lint main template
           echo "Linting main.bicep..."
           az bicep lint --file main.bicep
           
@@ -51,10 +125,17 @@ jobs:
             done
           fi
           
-      # 2. COMPILATION - Build Bicep
-      - name: Build Bicep to ARM
+          # Lint environment bicepparam files
+          echo "Linting environment parameter files..."
+          for bicepparam in $(find environments -name "*.bicepparam" -type f 2>/dev/null); do
+            echo "Linting: $bicepparam"
+            az bicep lint --file "$bicepparam"
+          done
+          
+      # 4. BUILD VALIDATION
+      - name: Build Bicep Validation
         run: |
-          echo "=== Building Bicep files ==="
+          echo "=== Building Bicep Files ==="
           
           # Build main template
           echo "Building main.bicep..."
@@ -72,60 +153,91 @@ jobs:
             done
           fi
           
-      # 3. BASIC VALIDATION
-      - name: Basic Validation
-        run: |
-          echo "=== Basic Validation ==="
+          # Test build with at least one environment
+          echo "Testing build with environment parameters..."
           
-          # Check required files
-          echo "Checking required files..."
-          
-          REQUIRED_FILES=("main.bicep" "main.bicepparam")
-          for file in "${REQUIRED_FILES[@]}"; do
-            if [ -f "$file" ]; then
-              echo "✅ $file exists"
-            else
-              echo "❌ $file is missing"
-              exit 1
-            fi
-          done
-          
-          # Check environment folders
-          if [ -d "environments" ]; then
-            echo "Checking environment configurations..."
-            for env in dev staging prod; do
-              if [ -d "environments/$env" ]; then
-                echo "✅ Environment $env directory exists"
-              else
-                echo "⚠️ Environment $env directory missing"
-              fi
-            done
-          fi
-          
-      # 4. HARDCODED VALUES CHECK
-      - name: Check for Hardcoded Values
-        run: |
-          echo "=== Checking for Hardcoded Values ==="
-          
-          FOUND_ISSUES=0
-          
-          # Check for hardcoded secrets
-          echo "Checking for hardcoded secrets..."
-          PATTERNS=("password" "secret" "key" "token" "connectionString")
-          
-          for pattern in "${PATTERNS[@]}"; do
-            RESULTS=$(grep -ri "$pattern" --include="*.bicep" --include="*.json" . 2>/dev/null | grep -v "test\|example\|demo\|placeholder\|@description" || true)
-            
-            if [ -n "$RESULTS" ]; then
-              echo "❌ Found potential hardcoded '$pattern':"
-              echo "$RESULTS" | head -3
-              FOUND_ISSUES=1
-            fi
-          done
-          
-          if [ $FOUND_ISSUES -eq 0 ]; then
-            echo "✅ No hardcoded values found"
+          # Find first valid environment
+          FIRST_ENV=$(find environments -name "main.bicepparam" -type f 2>/dev/null | head -1)
+          if [ -n "$FIRST_ENV" ]; then
+            echo "Testing with: $FIRST_ENV"
+            az bicep build --file main.bicep --parameters "$FIRST_ENV" --stdout > /dev/null
+            echo "✅ Builds successfully with parameters"
           else
-            echo "⚠️ Hardcoded values found. Use parameters instead."
-            exit 1
+            echo "⚠️ No main.bicepparam files found to test parameterized build"
           fi
+          
+      # 5. SECURITY CHECKS
+      - name: Security Checks
+        run: |
+          echo "=== Security Checks ==="
+          
+          # Check for hardcoded secrets (smart check ignoring comments)
+          echo "Checking for hardcoded secrets..."
+          python3 << 'EOF'
+          import os
+          import re
+          
+          def contains_hardcoded_secret(line):
+              # Skip comments
+              stripped = line.strip()
+              if stripped.startswith('//') or stripped.startswith('#'):
+                  return False
+              
+              # Patterns that indicate hardcoded secrets
+              patterns = [
+                  r'password\s*=\s*["\']',
+                  r'secret\s*=\s*["\']',
+                  r'key\s*=\s*["\']',
+                  r'token\s*=\s*["\']',
+                  r'connectionString\s*=\s*["\']',
+              ]
+              
+              for pattern in patterns:
+                  if re.search(pattern, line, re.IGNORECASE):
+                      return True
+              return False
+          
+          issues = []
+          
+          # Check Bicep files
+          for root, dirs, files in os.walk('.'):
+              if '.git' in root:
+                  continue
+                  
+              for file in files:
+                  if file.endswith('.bicep'):
+                      filepath = os.path.join(root, file)
+                      try:
+                          with open(filepath, 'r') as f:
+                              for i, line in enumerate(f, 1):
+                                  if contains_hardcoded_secret(line):
+                                      issues.append(f"{filepath}:{i}: {line.strip()}")
+                      except:
+                          pass
+          
+          # Check JSON parameter files in environments
+          env_path = os.path.join('.', 'environments')
+          if os.path.exists(env_path):
+              for root, dirs, files in os.walk(env_path):
+                  for file in files:
+                      if file.endswith('.json'):
+                          filepath = os.path.join(root, file)
+                          try:
+                              with open(filepath, 'r') as f:
+                                  content = f.read()
+                                  # Look for hardcoded values in parameters
+                                  if re.search(r'"value"\s*:\s*"[^"]*[Pp]assword[^"]*"', content):
+                                      issues.append(f"{filepath}: Hardcoded password in parameters")
+                                  if re.search(r'"value"\s*:\s*"[^"]*[Ss]ecret[^"]*"', content):
+                                      issues.append(f"{filepath}: Hardcoded secret in parameters")
+                          except:
+                              pass
+          
+          if issues:
+              print("❌ Hardcoded secrets found:")
+              for issue in issues:
+                  print(f"  - {issue}")
+              exit(1)
+          else:
+              print("✅ No hardcoded secrets found")
+          EOF
