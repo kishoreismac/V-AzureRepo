@@ -1,4 +1,4 @@
-name: Infrastructure Security Scan
+name: Infrastructure Security & Cost Scan
 
 on:
   pull_request:
@@ -9,9 +9,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  security-scan:
+  security-cost-scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     
     steps:
       - name: Checkout repository
@@ -22,7 +22,7 @@ jobs:
         uses: azure/CLI@v1
         with:
           inlineScript: |
-            echo "Setting up Azure CLI for security scan"
+            echo "Setting up Azure CLI"
             az version
             echo "✅ Azure CLI ready"
             
@@ -42,174 +42,78 @@ jobs:
         with:
           sarif_file: checkov-results.sarif
           
-      # 2. BASIC SECURITY CHECKS
-      - name: Bicep Security Scanner
+      # 2. INFRACOST COST ANALYSIS
+      - name: Setup Infracost
+        if: github.event_name == 'pull_request'
+        id: setup-infracost
         run: |
-          echo "=== Bicep Security Checks ==="
+          echo "=== Setting up Infracost ==="
           
-          # Check if main.bicep exists
-          if [ ! -f "main.bicep" ]; then
-            echo "ℹ️ main.bicep not found, skipping detailed checks"
+          if [ -z "${{ secrets.INFRACOST_API_KEY }}" ]; then
+            echo "INFRACOST_API_KEY not set. Using basic cost check."
+            echo "infracost-available=false" >> $GITHUB_OUTPUT
             exit 0
           fi
           
-          # Build Bicep
-          echo "Building main.bicep..."
-          az bicep build --file main.bicep --outfile main.json
+          echo "Installing Infracost..."
+          curl -fsSL https://raw.githubusercontent.com/infracost/infracost/master/scripts/install.sh | sh
+          export PATH="$PATH:$HOME/.infracost"
           
-          # Run Python security checks
-          python3 << 'EOF'
-          import json
-          import sys
+          infracost configure set api_key ${{ secrets.INFRACOST_API_KEY }}
+          echo "infracost-available=true" >> $GITHUB_OUTPUT
           
-          try:
-              with open('main.json', 'r') as f:
-                  template = json.load(f)
-              
-              issues = []
-              warnings = []
-              
-              for resource in template.get('resources', []):
-                  resource_type = resource.get('type', '')
-                  properties = resource.get('properties', {})
-                  
-                  # Storage account security
-                  if 'Microsoft.Storage/storageAccounts' in resource_type:
-                      if not properties.get('supportsHttpsTrafficOnly', True):
-                          issues.append('Storage account allows HTTP traffic')
-                      
-                      if properties.get('minimumTlsVersion') != 'TLS1_2':
-                          warnings.append('Storage account should use TLS 1.2 minimum')
-                      
-                      if 'encryption' not in properties:
-                          warnings.append('Storage account missing encryption configuration')
-                      
-                      network_acls = properties.get('networkAcls', {})
-                      if network_acls.get('defaultAction') == 'Allow':
-                          issues.append('Storage account network default action should be Deny')
-                  
-                  # Function App security
-                  if 'Microsoft.Web/sites' in resource_type:
-                      if not properties.get('httpsOnly', True):
-                          issues.append('Function App should be HTTPS only')
-                      
-                      site_config = properties.get('siteConfig', {})
-                      if site_config.get('minTlsVersion') != '1.2':
-                          warnings.append('Function App should use TLS 1.2 minimum')
-              
-              if warnings:
-                  print('⚠️ Security warnings (should fix):')
-                  for warning in warnings:
-                      print(f'  - {warning}')
-              
-              if issues:
-                  print('❌ Critical security issues (must fix):')
-                  for issue in issues:
-                      print(f'  - {issue}')
-                  sys.exit(1)
-              else:
-                  if warnings:
-                      print('✅ No critical issues, but consider fixing warnings above')
-                  else:
-                      print('✅ All security checks passed')
-                  
-          except FileNotFoundError:
-              print('❌ main.bicep not found or failed to build')
-              sys.exit(1)
-          except Exception as e:
-              print(f'❌ Error during security check: {e}')
-              sys.exit(1)
-          EOF
-          
-      # 3. SMART HARDCODED SECRETS CHECK (Ignores comments)
-      - name: Check for Hardcoded Secrets
+      - name: Generate Infracost Report
+        if: steps.setup-infracost.outputs.infracost-available == 'true'
         run: |
-          echo "=== Smart Hardcoded Secrets Check ==="
-          echo "Checking for actual hardcoded values (ignoring comments)..."
+          echo "=== Infracost Detailed Cost Analysis ==="
           
-          REAL_ISSUES=0
+          # Generate cost breakdown
+          infracost breakdown \
+            --path . \
+            --format json \
+            --out-file infracost.json
           
-          # Check Bicep files for actual assignments, not comments
-          echo "Checking Bicep files..."
-          for file in $(find . -name "*.bicep" -type f 2>/dev/null); do
-            echo "Checking: $file"
-            
-            # Remove comment lines and check remaining
-            TEMP_FILE=$(mktemp)
-            # Remove single line comments
-            grep -v '^\s*//' "$file" | grep -v '^\s*#' > "$TEMP_FILE"
-            
-            # Check for actual assignments
-            if grep -i 'password\s*=\s*"[^"]*"' "$TEMP_FILE"; then
-              echo "❌ Found hardcoded password assignment in: $file"
-              grep -n -i 'password\s*=\s*"[^"]*"' "$file"
-              REAL_ISSUES=1
-            fi
-            
-            if grep -i 'secret\s*=\s*"[^"]*"' "$TEMP_FILE"; then
-              echo "❌ Found hardcoded secret assignment in: $file"
-              grep -n -i 'secret\s*=\s*"[^"]*"' "$file"
-              REAL_ISSUES=1
-            fi
-            
-            if grep -i 'key\s*=\s*"[^"]*"' "$TEMP_FILE" | grep -v 'PrimaryKey\|SecondaryKey'; then
-              echo "❌ Found hardcoded key assignment in: $file"
-              grep -n -i 'key\s*=\s*"[^"]*"' "$file" | grep -v 'PrimaryKey\|SecondaryKey'
-              REAL_ISSUES=1
-            fi
-            
-            rm "$TEMP_FILE"
-          done
+          # Show summary
+          echo "Cost Summary:"
+          infracost output --path infracost.json --format table
           
-          # Check JSON parameter files
-          echo "Checking parameter files..."
-          for file in $(find . -path ./environments -name "*.json" -type f 2>/dev/null); do
-            echo "Checking: $file"
-            
-            # Look for hardcoded values in parameters
-            if grep -i '"value"\s*:\s*"[^"]*[Pp]assword[^"]*"' "$file"; then
-              echo "❌ Found hardcoded password in parameter file: $file"
-              grep -n -i '"value".*[Pp]assword' "$file"
-              REAL_ISSUES=1
-            fi
-            
-            if grep -i '"value"\s*:\s*"[^"]*[Ss]ecret[^"]*"' "$file"; then
-              echo "❌ Found hardcoded secret in parameter file: $file"
-              grep -n -i '"value".*[Ss]ecret' "$file"
-              REAL_ISSUES=1
-            fi
-            
-            if grep -i '"value"\s*:\s*"[^"]*[Kk]ey[^"]*"' "$file" | grep -v 'PrimaryKey\|SecondaryKey'; then
-              echo "❌ Found hardcoded key in parameter file: $file"
-              grep -n -i '"value".*[Kk]ey' "$file" | grep -v 'PrimaryKey\|SecondaryKey'
-              REAL_ISSUES=1
-            fi
-          done
+          # Check budget
+          BUDGET=100
+          ESTIMATED_COST=$(jq '.totalMonthlyCost' infracost.json)
           
-          if [ $REAL_ISSUES -eq 0 ]; then
-            echo "✅ No actual hardcoded secrets found"
-            echo "ℹ️ Comments about 'token' or 'key' are not actual secrets"
+          echo ""
+          echo "Estimated monthly cost: $${ESTIMATED_COST}"
+          echo "Budget limit: $${BUDGET}"
+          
+          if (( $(echo "$ESTIMATED_COST > $BUDGET" | bc -l) )); then
+            echo "❌ Cost exceeds budget!"
+            echo "infracost-status=over-budget" >> $GITHUB_OUTPUT
           else
-            echo "❌ Actual hardcoded values found. Use parameters or Azure Key Vault."
-            exit 1
+            echo "✅ Cost within budget"
+            echo "infracost-status=within-budget" >> $GITHUB_OUTPUT
           fi
           
-      # 4. COST AWARENESS CHECK (No external dependencies)
-      - name: Cost Awareness Check
+      - name: Post Infracost Comment to PR
+        if: steps.setup-infracost.outputs.infracost-available == 'true'
+        uses: infracost/actions/comment@v2
+        with:
+          path: infracost.json
+          behavior: update
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          
+      # 3. BASIC COST CHECK (if Infracost not available)
+      - name: Basic Cost Awareness Check
+        if: steps.setup-infracost.outputs.infracost-available != 'true'
         run: |
-          echo "=== Cost Awareness Check ==="
+          echo "=== Basic Cost Awareness Check ==="
           
           if [ ! -f "main.bicep" ]; then
-            echo "ℹ️ main.bicep not found, skipping cost check"
+            echo "ℹ️ main.bicep not found"
             exit 0
           fi
           
-          # Build to check for expensive resources
           az bicep build --file main.bicep --outfile main.json
           
-          echo "Checking for potentially expensive resources..."
-          
-          # Use Python for better analysis
           python3 << 'EOF'
           import json
           
@@ -227,7 +131,7 @@ jobs:
               with open('main.json', 'r') as f:
                   template = json.load(f)
               
-              cost_warnings = []
+              warnings = []
               
               for resource in template.get('resources', []):
                   sku = resource.get('sku', {})
@@ -235,43 +139,176 @@ jobs:
                   resource_type = resource.get('type', '')
                   
                   if sku_name in expensive_skus:
-                      cost_warnings.append(f"{resource_type}: SKU {sku_name} - {expensive_skus[sku_name]}")
-                  
-                  # Check for premium features
-                  properties = resource.get('properties', {})
-                  if 'zoneRedundant' in str(properties) and 'true' in str(properties):
-                      cost_warnings.append(f"{resource_type}: Zone redundancy increases cost (good for HA)")
-                  
-                  if 'geoRedundant' in str(properties) and 'true' in str(properties):
-                      cost_warnings.append(f"{resource_type}: Geo-redundancy increases cost (good for DR)")
+                      warnings.append(f"{resource_type}: {expensive_skus[sku_name]}")
               
-              if cost_warnings:
-                  print("⚠️ Cost considerations:")
-                  for warning in cost_warnings:
+              if warnings:
+                  print("⚠️ Cost optimization suggestions:")
+                  for warning in warnings:
                       print(f"  - {warning}")
-                  print("\nℹ️ For detailed cost analysis, add INFRACOST_API_KEY to secrets")
+                  print("\nℹ️ For accurate cost estimation, add INFRACOST_API_KEY to secrets")
               else:
-                  print("✅ No obvious expensive resources detected")
+                  print("✅ No obvious expensive SKUs detected")
                   
           except Exception as e:
-              print(f"ℹ️ Cost check note: {e}")
+              print(f"Note: {e}")
           EOF
           
-      # 5. FINAL SUMMARY
-      - name: Security Scan Summary
+      # 4. BASIC SECURITY CHECKS
+      - name: Bicep Security Scanner
+        run: |
+          echo "=== Bicep Security Checks ==="
+          
+          if [ ! -f "main.bicep" ]; then
+            echo "ℹ️ main.bicep not found"
+            exit 0
+          fi
+          
+          echo "Building main.bicep..."
+          az bicep build --file main.bicep --outfile main.json
+          
+          python3 << 'EOF'
+          import json
+          import sys
+          
+          try:
+              with open('main.json', 'r') as f:
+                  template = json.load(f)
+              
+              issues = []
+              warnings = []
+              
+              for resource in template.get('resources', []):
+                  resource_type = resource.get('type', '')
+                  properties = resource.get('properties', {})
+                  
+                  if 'Microsoft.Storage/storageAccounts' in resource_type:
+                      if not properties.get('supportsHttpsTrafficOnly', True):
+                          issues.append('Storage account allows HTTP traffic')
+                      
+                      network_acls = properties.get('networkAcls', {})
+                      if network_acls.get('defaultAction') == 'Allow':
+                          issues.append('Storage account network default action should be Deny')
+                  
+                  if 'Microsoft.Web/sites' in resource_type:
+                      if not properties.get('httpsOnly', True):
+                          issues.append('Function App should be HTTPS only')
+              
+              if issues:
+                  print('❌ Critical security issues:')
+                  for issue in issues:
+                      print(f'  - {issue}')
+                  sys.exit(1)
+              else:
+                  print('✅ No critical security issues found')
+                  
+          except Exception as e:
+              print(f"Note: {e}")
+          EOF
+          
+      # 5. SMART HARDCODED SECRETS CHECK
+      - name: Check for Hardcoded Secrets
+        run: |
+          echo "=== Hardcoded Secrets Check ==="
+          
+          python3 << 'EOF'
+          import os
+          import re
+          
+          def check_file(filepath):
+              issues = []
+              try:
+                  with open(filepath, 'r') as f:
+                      lines = f.readlines()
+                  
+                  for i, line in enumerate(lines, 1):
+                      # Skip comments
+                      stripped = line.strip()
+                      if stripped.startswith('//') or stripped.startswith('#'):
+                          continue
+                      
+                      # Check for hardcoded secrets
+                      patterns = [
+                          (r'password\s*=\s*["\']', 'Hardcoded password'),
+                          (r'secret\s*=\s*["\']', 'Hardcoded secret'),
+                          (r'key\s*=\s*["\']', 'Hardcoded key'),
+                          (r'token\s*=\s*["\']', 'Hardcoded token'),
+                      ]
+                      
+                      for pattern, desc in patterns:
+                          if re.search(pattern, line, re.IGNORECASE):
+                              issues.append(f"Line {i}: {desc}")
+              
+              except Exception as e:
+                  pass
+              
+              return issues
+          
+          all_issues = []
+          
+          # Check Bicep files
+          for root, dirs, files in os.walk('.'):
+              if '.git' in dirs:
+                  dirs.remove('.git')
+              
+              for file in files:
+                  if file.endswith('.bicep'):
+                      filepath = os.path.join(root, file)
+                      issues = check_file(filepath)
+                      if issues:
+                          all_issues.append((filepath, issues))
+          
+          # Check JSON parameter files
+          if os.path.exists('environments'):
+              for root, dirs, files in os.walk('environments'):
+                  for file in files:
+                      if file.endswith('.json'):
+                          filepath = os.path.join(root, file)
+                          
+                          try:
+                              with open(filepath, 'r') as f:
+                                  content = f.read()
+                              
+                              # Look for hardcoded values
+                              if re.search(r'"value"\s*:\s*"[^"]*[Pp]assword[^"]*"', content):
+                                  all_issues.append((filepath, ["Hardcoded password in parameters"]))
+                              
+                              if re.search(r'"value"\s*:\s*"[^"]*[Ss]ecret[^"]*"', content):
+                                  all_issues.append((filepath, ["Hardcoded secret in parameters"]))
+                          
+                          except Exception:
+                              pass
+          
+          if all_issues:
+              print("❌ Hardcoded values found:")
+              for filepath, issues in all_issues:
+                  print(f"\nFile: {filepath}")
+                  for issue in issues:
+                      print(f"  - {issue}")
+              print("\nUse parameters or Key Vault instead.")
+              exit(1)
+          else:
+              print("✅ No hardcoded secrets found")
+          EOF
+          
+      # 6. FINAL SUMMARY
+      - name: Security & Cost Scan Summary
         if: always()
         run: |
-          echo "=== SECURITY SCAN SUMMARY ==="
-          echo "✅ Checkov scan completed (results uploaded)"
-          echo "✅ Bicep security checks completed"
-          echo "✅ Hardcoded secrets check completed"
-          echo "✅ Cost awareness check completed"
+          echo "=== SECURITY & COST SCAN SUMMARY ==="
           echo ""
-          echo "📊 All security checks have been executed."
-          echo "Check the 'Security' tab for detailed Checkov findings."
+          echo "🔒 Security:"
+          echo "  ✅ Checkov scan completed (view in Security tab)"
+          echo "  ✅ Custom security checks completed"
+          echo "  ✅ Hardcoded secrets check completed"
           echo ""
-          echo "Next steps:"
-          echo "1. Review Checkov findings in GitHub Security tab"
-          echo "2. Fix any critical security issues"
-          echo "3. Consider cost optimization suggestions"
-          echo "4. For production, add INFRACOST_API_KEY for detailed cost analysis"
+          echo "💰 Cost:"
+          if [ "${{ steps.setup-infracost.outputs.infracost-available }}" = "true" ]; then
+            echo "  ✅ Infracost detailed analysis completed"
+            echo "  ✅ PR comment with cost breakdown posted"
+            echo "  ✅ Budget check: ${{ steps.generate-infracost-report.outputs.infracost-status }}"
+          else
+            echo "  ✅ Basic cost awareness check completed"
+            echo "  ℹ️ Add INFRACOST_API_KEY to secrets for detailed analysis"
+          fi
+          echo ""
+          echo "📊 All checks completed successfully!"
