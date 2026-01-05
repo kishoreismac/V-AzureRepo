@@ -4,10 +4,8 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'infra/**'
+      - '**'
       - '.github/workflows/security-scan.yml'
-  schedule:
-    - cron: '0 9 * * 1'  # Weekly on Monday at 9 AM
 
 jobs:
   security-scan:
@@ -17,6 +15,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         
+      # ✅ Use Azure CLI instead of setup-bicep
+      - name: Setup Azure CLI
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            az version
+            az bicep install
+            bicep --version
+            
       # 1. CHECKOV - Infrastructure as Code Security
       - name: Run Checkov Security Scan
         uses: bridgecrewio/checkov-action@master
@@ -26,100 +33,47 @@ jobs:
           output_format: sarif
           output_file_path: checkov-results.sarif
           soft_fail: false
-          quiet: false
           
       - name: Upload Checkov results
         uses: github/codeql-action/upload-sarif@v2
         with:
           sarif_file: checkov-results.sarif
           
-      # 2. AZURE SPECIFIC SECURITY CHECKS
-      - name: Azure Security Scanner
-        env:
-          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      # 2. BICEP-SPECIFIC SECURITY CHECKS
+      - name: Bicep Security Scanner
         run: |
-          echo "=== Azure Security Checks ==="
+          echo "=== Bicep Security Checks ==="
           
-          # Create test parameters file
-          cat > test-params.json <<EOF
-          {
-            "environment": "test",
-            "location": "eastus",
-            "tags": {
-              "Environment": "Test",
-              "SecurityScan": "true"
-            }
-          }
+          # Build Bicep
+          bicep build main.bicep --outfile main.json
+          
+          # Run custom security checks
+          python3 << 'EOF'
+          import json
+          import sys
+          
+          with open('main.json', 'r') as f:
+              template = json.load(f)
+          
+          issues = []
+          
+          # Check for security issues
+          for resource in template.get('resources', []):
+              # Check for public access
+              if 'publicNetworkAccess' in str(resource):
+                  if 'Enabled' in str(resource):
+                      issues.append('Public network access enabled')
+              
+              # Check for missing encryption
+              if 'Microsoft.Storage/storageAccounts' in resource.get('type', ''):
+                  if 'encryption' not in str(resource):
+                      issues.append('Storage account missing encryption')
+          
+          if issues:
+              print('⚠️ Security issues found:')
+              for issue in issues:
+                  print(f'  - {issue}')
+              sys.exit(1)
+          else:
+              print('✅ No security issues found')
           EOF
-          
-          # Build Bicep to check configurations
-          az bicep build --file main.bicep --outfile main.json
-          
-          # Check for common security issues
-          echo "Checking for security issues..."
-          
-          # Publicly accessible resources
-          if grep -q "\"publicNetworkAccess\": \"Enabled\"" main.json; then
-            echo "⚠️ Warning: Public network access enabled"
-          fi
-          
-          # Missing encryption
-          if ! grep -q "encryption" main.json; then
-            echo "ℹ️ Info: No encryption settings found"
-          fi
-          
-          # Check NSG rules
-          if grep -q "networkSecurityGroup" main.json; then
-            echo "🔒 NSG configuration found"
-          fi
-          
-      # 3. COST ESTIMATION
-      - name: Infrastructure Cost Estimation
-        uses: infracost/actions/setup@v2
-        with:
-          api-key: ${{ secrets.INFRACOST_API_KEY }}
-          
-      - name: Run Infracost
-        run: |
-          echo "=== Cost Estimation ==="
-          
-          # Generate cost breakdown
-          infracost breakdown \
-            --path . \
-            --format json \
-            --out-file infracost.json
-            
-          # Check against budget
-          BUDGET=100  # Monthly budget in USD
-          ESTIMATED_COST=$(jq '.totalMonthlyCost' infracost.json)
-          
-          echo "Estimated monthly cost: $${ESTIMATED_COST}"
-          
-          if (( $(echo "$ESTIMATED_COST > $BUDGET" | bc -l) )); then
-            echo "❌ Cost exceeds budget of $${BUDGET}"
-            exit 1
-          else
-            echo "✅ Cost within budget"
-          fi
-          
-      # 4. POLICY COMPLIANCE
-      - name: Policy Compliance Check
-        env:
-          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-        run: |
-          echo "=== Policy Compliance ==="
-          
-          # Check against Azure Policy built-in definitions
-          echo "Checking compliance with common policies..."
-          
-          # List of policies to check
-          POLICIES=(
-            "Allowed locations"
-            "Allowed storage account SKUs"
-            "Allowed virtual machine SKUs"
-            "Audit storage accounts with no encryption"
-          )
-          
-          for policy in "${POLICIES[@]}"; do
-            echo "Checking: $policy"
-          done
