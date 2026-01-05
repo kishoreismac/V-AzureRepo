@@ -162,7 +162,7 @@ jobs:
             echo "Testing with: $FIRST_ENV"
             
             # ✅ FIXED: For .bicepparam files, just pass the file directly
-            az bicep build --file main.bicep --parameters "$FIRST_ENV" --stdout > /dev/null
+            az bicep build-params --file "$FIRST_ENV" --stdout > /dev/null
             echo "✅ Builds successfully with parameters"
           else
             echo "⚠️ No main.bicepparam files found to test parameterized build"
@@ -172,7 +172,7 @@ jobs:
             if [ -n "$FIRST_JSON" ]; then
               echo "Testing with JSON parameters: $FIRST_JSON"
               # ✅ FIXED: For JSON files, use @filename
-              az bicep build --file main.bicep --parameters "@$FIRST_JSON" --stdout > /dev/null
+              az bicep build-params --file "@$FIRST_JSON" --stdout > /dev/null
               echo "✅ Builds successfully with JSON parameters"
             fi
           fi
