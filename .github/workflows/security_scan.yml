@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main, develop]
     paths:
-      - '**'
+      - 'infra/**'
       - '.github/workflows/security_scan.yml'
   workflow_dispatch:
 
@@ -12,6 +12,9 @@ jobs:
   security-cost-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write  # Required for Infracost comments
     
     steps:
       - name: Checkout repository
@@ -46,24 +49,13 @@ jobs:
       - name: Setup Infracost
         if: github.event_name == 'pull_request'
         id: setup-infracost
-        run: |
-          echo "=== Setting up Infracost ==="
-          
-          if [ -z "${{ secrets.INFRACOST_API_KEY }}" ]; then
-            echo "INFRACOST_API_KEY not set. Using basic cost check."
-            echo "infracost-available=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          echo "Installing Infracost..."
-          curl -fsSL https://raw.githubusercontent.com/infracost/infracost/master/scripts/install.sh | sh
-          export PATH="$PATH:$HOME/.infracost"
-          
-          infracost configure set api_key ${{ secrets.INFRACOST_API_KEY }}
-          echo "infracost-available=true" >> $GITHUB_OUTPUT
+        uses: infracost/actions/setup@v2
+        with:
+          api-key: ${{ secrets.INFRACOST_API_KEY || '' }}
           
       - name: Generate Infracost Report
-        if: steps.setup-infracost.outputs.infracost-available == 'true'
+        if: github.event_name == 'pull_request' && secrets.INFRACOST_API_KEY != ''
+        id: infracost-report
         run: |
           echo "=== Infracost Detailed Cost Analysis ==="
           
@@ -94,18 +86,24 @@ jobs:
           fi
           
       - name: Post Infracost Comment to PR
-        if: steps.setup-infracost.outputs.infracost-available == 'true'
-        uses: infracost/actions/comment@v2
-        with:
-          path: infracost.json
-          behavior: update
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+        if: github.event_name == 'pull_request' && secrets.INFRACOST_API_KEY != ''
+        run: |
+          echo "=== Posting Infracost Comment to PR ==="
+          
+          # Post comment using CLI (NOT composite action)
+          infracost comment github \
+            --path infracost.json \
+            --repo ${{ github.repository }} \
+            --pull-request ${{ github.event.pull_request.number }} \
+            --github-token ${{ secrets.GITHUB_TOKEN }} \
+            --behavior update
           
       # 3. BASIC COST CHECK (if Infracost not available)
       - name: Basic Cost Awareness Check
-        if: steps.setup-infracost.outputs.infracost-available != 'true'
+        if: github.event_name == 'pull_request' && secrets.INFRACOST_API_KEY == ''
         run: |
           echo "=== Basic Cost Awareness Check ==="
+          echo "ℹ️ INFRACOST_API_KEY not set. Using basic cost check."
           
           if [ ! -f "main.bicep" ]; then
             echo "ℹ️ main.bicep not found"
@@ -301,11 +299,11 @@ jobs:
           echo "  ✅ Custom security checks completed"
           echo "  ✅ Hardcoded secrets check completed"
           echo ""
-          echo "💰 Cost:"
-          if [ "${{ steps.setup-infracost.outputs.infracost-available }}" = "true" ]; then
+          echo "💰 Cost Analysis:"
+          if [ "${{ secrets.INFRACOST_API_KEY != '' }}" ] && [ "${{ github.event_name == 'pull_request' }}" ]; then
             echo "  ✅ Infracost detailed analysis completed"
             echo "  ✅ PR comment with cost breakdown posted"
-            echo "  ✅ Budget check: ${{ steps.generate-infracost-report.outputs.infracost-status }}"
+            echo "  ✅ Budget check performed"
           else
             echo "  ✅ Basic cost awareness check completed"
             echo "  ℹ️ Add INFRACOST_API_KEY to secrets for detailed analysis"
