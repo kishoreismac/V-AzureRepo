@@ -1,28 +1,25 @@
-name: Infrastructure Security Scan
+name: Infrastructure Security & Cost Scan
 
 on:
   pull_request:
     branches: [main]
     paths:
-      - '**'
+      - 'infra/**'
       - '.github/workflows/security-scan.yml'
+  schedule:
+    - cron: '0 9 * * 1'  # Weekly on Monday at 9 AM
 
 jobs:
-  security-scan:
+  security-cost-scan:
     runs-on: ubuntu-latest
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         
-      # ✅ Use Azure CLI instead of setup-bicep
+      # Setup Azure CLI (Bicep auto-installs)
       - name: Setup Azure CLI
         uses: azure/CLI@v1
-        with:
-          inlineScript: |
-            az version
-            az bicep install
-            bicep --version
             
       # 1. CHECKOV - Infrastructure as Code Security
       - name: Run Checkov Security Scan
@@ -39,41 +36,139 @@ jobs:
         with:
           sarif_file: checkov-results.sarif
           
-      # 2. BICEP-SPECIFIC SECURITY CHECKS
+      # 2. COST ANALYSIS WITH INFRACOST
+      - name: Setup Infracost
+        if: github.event_name == 'pull_request'
+        uses: infracost/actions/setup@v2
+        with:
+          api-key: ${{ secrets.INFRACOST_API_KEY }}
+          
+      - name: Generate Infracost cost estimate
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "=== Cost Estimation with Infracost ==="
+          
+          # Generate cost breakdown
+          infracost breakdown \
+            --path . \
+            --format json \
+            --out-file infracost.json
+          
+          # Extract monthly cost
+          ESTIMATED_COST=$(jq '.totalMonthlyCost' infracost.json)
+          echo "Estimated monthly cost: $${ESTIMATED_COST}"
+          
+          # Check against budget
+          BUDGET=100  # Monthly budget in USD
+          if (( $(echo "$ESTIMATED_COST > $BUDGET" | bc -l) )); then
+            echo "❌ Cost exceeds budget of $${BUDGET}"
+            exit 1
+          else
+            echo "✅ Cost within budget of $${BUDGET}"
+          fi
+          
+      - name: Post Infracost comment to PR
+        if: github.event_name == 'pull_request'
+        uses: infracost/actions/comment@v2
+        with:
+          path: infracost.json
+          behavior: update
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          
+      # 3. BICEP-SPECIFIC SECURITY CHECKS
       - name: Bicep Security Scanner
         run: |
           echo "=== Bicep Security Checks ==="
           
-          # Build Bicep
-          bicep build main.bicep --outfile main.json
+          # Build Bicep using az bicep (FIXED)
+          az bicep build --file main.bicep --outfile main.json
           
           # Run custom security checks
           python3 << 'EOF'
           import json
           import sys
           
-          with open('main.json', 'r') as f:
-              template = json.load(f)
-          
-          issues = []
-          
-          # Check for security issues
-          for resource in template.get('resources', []):
-              # Check for public access
-              if 'publicNetworkAccess' in str(resource):
-                  if 'Enabled' in str(resource):
-                      issues.append('Public network access enabled')
+          try:
+              with open('main.json', 'r') as f:
+                  template = json.load(f)
               
-              # Check for missing encryption
-              if 'Microsoft.Storage/storageAccounts' in resource.get('type', ''):
-                  if 'encryption' not in str(resource):
-                      issues.append('Storage account missing encryption')
-          
-          if issues:
-              print('⚠️ Security issues found:')
-              for issue in issues:
-                  print(f'  - {issue}')
+              issues = []
+              
+              # Check for security issues
+              for resource in template.get('resources', []):
+                  resource_str = json.dumps(resource)
+                  resource_type = resource.get('type', '')
+                  
+                  # Check for public access
+                  if 'publicNetworkAccess' in resource_str:
+                      if 'Enabled' in resource_str:
+                          issues.append(f'Public network access enabled in {resource_type}')
+                  
+                  # Check for missing encryption in storage accounts
+                  if 'Microsoft.Storage/storageAccounts' in resource_type:
+                      if 'encryption' not in resource_str:
+                          issues.append('Storage account missing encryption')
+                      
+                      # Check HTTPS only
+                      if '"supportsHttpsTrafficOnly": false' in resource_str:
+                          issues.append('Storage account allows HTTP traffic')
+                  
+                  # Check SQL Server security
+                  if 'Microsoft.Sql/servers' in resource_type:
+                      if '"publicNetworkAccess": "Enabled"' in resource_str:
+                          issues.append('SQL Server has public network access enabled')
+              
+              if issues:
+                  print('⚠️ Security issues found:')
+                  for issue in issues:
+                      print(f'  - {issue}')
+                  sys.exit(1)
+              else:
+                  print('✅ No security issues found')
+                  
+          except FileNotFoundError:
+              print('❌ main.json not found. Build Bicep first.')
               sys.exit(1)
-          else:
-              print('✅ No security issues found')
+          except json.JSONDecodeError as e:
+              print(f'❌ Error parsing JSON: {e}')
+              sys.exit(1)
           EOF
+          
+      # 4. HARDCODED SECRETS CHECK
+      - name: Hardcoded Secrets Check
+        run: |
+          echo "=== Checking for Hardcoded Secrets ==="
+          
+          # Patterns to check for
+          PATTERNS=(
+            "password"
+            "secret"
+            "key"
+            "token"
+            "connectionString"
+            "accountKey"
+            "accessKey"
+            "sharedAccessKey"
+          )
+          
+          FOUND_SECRETS=0
+          
+          for pattern in "${PATTERNS[@]}"; do
+            echo "Checking for: $pattern"
+            
+            # Search in Bicep and parameter files
+            RESULTS=$(grep -ri "$pattern" --include="*.bicep" --include="*.json" --include="*.bicepparam" . 2>/dev/null | grep -v "test\|example\|demo\|placeholder\|@description" || true)
+            
+            if [ -n "$RESULTS" ]; then
+              echo "❌ Found potential hardcoded $pattern:"
+              echo "$RESULTS" | head -5  # Show first 5 occurrences
+              FOUND_SECRETS=1
+            fi
+          done
+          
+          if [ $FOUND_SECRETS -eq 1 ]; then
+            echo "❌ Hardcoded secrets found. Use parameters or Azure Key Vault instead."
+            exit 1
+          else
+            echo "✅ No hardcoded secrets found"
+          fi
