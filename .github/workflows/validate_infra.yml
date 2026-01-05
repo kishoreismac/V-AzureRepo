@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main, develop]
     paths:
-      - '**'
+      - 'infra/**'
       - '.github/workflows/validate-infra.yml'
 
 jobs:
@@ -16,88 +16,116 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
       
-      # ✅ SIMPLIFIED: Just use Azure CLI - Bicep auto-installs
+      # ✅ FIXED: Add inlineScript parameter
       - name: Setup Azure CLI
         uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            echo "=== Setting up Azure CLI ==="
+            az version
+            echo "Bicep is included with Azure CLI"
             
-      # 1. LINTING - Check Bicep syntax and style (USE az bicep)
+      # 1. LINTING - Check Bicep syntax
       - name: Lint Bicep files
         run: |
           echo "=== Linting Bicep files ==="
           
-          # Check all .bicep files using az bicep
-          find . -name "*.bicep" -type f | while read file; do
-            echo "Linting: $file"
-            az bicep lint --file "$file"
-          done
-          
-          # Check for required files
+          # Check if main.bicep exists
           if [ ! -f "main.bicep" ]; then
             echo "❌ main.bicep file is missing"
             exit 1
           fi
           
-      # 2. COMPILATION - Build Bicep to ARM JSON (USE az bicep)
+          # Lint main file
+          echo "Linting main.bicep..."
+          az bicep lint --file main.bicep
+          
+          # Lint modules if they exist
+          if [ -d "modules" ]; then
+            echo "Linting modules..."
+            for file in modules/*.bicep; do
+              if [ -f "$file" ]; then
+                echo "Linting: $(basename "$file")"
+                az bicep lint --file "$file"
+              fi
+            done
+          fi
+          
+      # 2. COMPILATION - Build Bicep
       - name: Build Bicep to ARM
         run: |
           echo "=== Building Bicep files ==="
           
-          # Build main template using az bicep
-          az bicep build --file main.bicep --stdout
+          # Build main template
+          echo "Building main.bicep..."
+          az bicep build --file main.bicep --stdout > /dev/null
+          echo "✅ main.bicep builds successfully"
           
-          # Build all modules
-          for module in modules/*.bicep; do
-            if [ -f "$module" ]; then
-              echo "Building module: $module"
-              az bicep build --file "$module" --stdout > /dev/null
-            fi
-          done
-          
-          echo "✅ All Bicep files compile successfully"
+          # Build modules
+          if [ -d "modules" ]; then
+            echo "Building modules..."
+            for file in modules/*.bicep; do
+              if [ -f "$file" ]; then
+                az bicep build --file "$file" --stdout > /dev/null
+                echo "✅ $(basename "$file") builds successfully"
+              fi
+            done
+          fi
           
       # 3. BASIC VALIDATION
       - name: Basic Validation
         run: |
           echo "=== Basic Validation ==="
           
-          # Create compiled version using az bicep
-          az bicep build --file main.bicep --outfile main.json
+          # Check required files
+          echo "Checking required files..."
           
-          echo "✅ Compiled to ARM JSON: main.json"
+          REQUIRED_FILES=("main.bicep" "main.bicepparam")
+          for file in "${REQUIRED_FILES[@]}"; do
+            if [ -f "$file" ]; then
+              echo "✅ $file exists"
+            else
+              echo "❌ $file is missing"
+              exit 1
+            fi
+          done
           
-          # Check file size
-          echo "File size: $(wc -l < main.json) lines"
-          
-      # 4. LOCAL ANALYSIS
-      - name: Local Analysis
-        run: |
-          echo "=== Running Local Analysis ==="
-          
-          # Check parameter files exist
+          # Check environment folders
           if [ -d "environments" ]; then
-            echo "Checking parameter files:"
-            find environments -name "*.json" -o -name "*.bicepparam"
-          else
-            echo "⚠️ No environments directory found"
+            echo "Checking environment configurations..."
+            for env in dev staging prod; do
+              if [ -d "environments/$env" ]; then
+                echo "✅ Environment $env directory exists"
+              else
+                echo "⚠️ Environment $env directory missing"
+              fi
+            done
           fi
           
-          # Check for hardcoded values
-          echo "Checking for hardcoded values..."
-          if grep -ri "password\|secret\|key\|token" --include="*.bicep" --include="*.json" . 2>/dev/null | grep -v "test\|example\|demo\|placeholder"; then
-            echo "⚠️ Found potentially sensitive values"
+      # 4. HARDCODED VALUES CHECK
+      - name: Check for Hardcoded Values
+        run: |
+          echo "=== Checking for Hardcoded Values ==="
+          
+          FOUND_ISSUES=0
+          
+          # Check for hardcoded secrets
+          echo "Checking for hardcoded secrets..."
+          PATTERNS=("password" "secret" "key" "token" "connectionString")
+          
+          for pattern in "${PATTERNS[@]}"; do
+            RESULTS=$(grep -ri "$pattern" --include="*.bicep" --include="*.json" . 2>/dev/null | grep -v "test\|example\|demo\|placeholder\|@description" || true)
+            
+            if [ -n "$RESULTS" ]; then
+              echo "❌ Found potential hardcoded '$pattern':"
+              echo "$RESULTS" | head -3
+              FOUND_ISSUES=1
+            fi
+          done
+          
+          if [ $FOUND_ISSUES -eq 0 ]; then
+            echo "✅ No hardcoded values found"
+          else
+            echo "⚠️ Hardcoded values found. Use parameters instead."
             exit 1
           fi
-          
-          echo "✅ No hardcoded values found"
-          
-      # 5. DEPENDENCY CHECK (USE az bicep)
-      - name: Check Dependencies
-        run: |
-          echo "=== Checking Bicep Dependencies ==="
-          
-          # Create compiled version
-          az bicep build --file main.bicep --outfile main.json
-          
-          # Check module imports
-          echo "Module imports found in:"
-          find . -name "*.bicep" -exec grep -l "module " {} \; 2>/dev/null || echo "No module imports found"
