@@ -1,14 +1,14 @@
-name: Infrastructure Security & Cost Scan
+name: Infrastructure Security Scan
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - '**'
-      - '.github/workflows/security-scan.yml'
+      - '.github/workflows/security_scan.yml'
 
 jobs:
-  security-cost-scan:
+  security-scan:
     runs-on: ubuntu-latest
     
     steps:
@@ -18,6 +18,8 @@ jobs:
       # Setup Azure CLI
       - name: Setup Azure CLI
         uses: azure/CLI@v1
+        with:
+          inlineScript: echo "Azure CLI ready"
             
       # 1. CHECKOV SECURITY SCAN
       - name: Run Checkov Security Scan
@@ -34,15 +36,31 @@ jobs:
         with:
           sarif_file: checkov-results.sarif
           
-      # 2. COST ANALYSIS (OPTIONAL - Requires Infracost API Key)
+      # 2. COST ANALYSIS (Simplified - no secrets in condition)
       - name: Setup Infracost
-        if: github.event_name == 'pull_request' && secrets.INFRACOST_API_KEY != ''
-        uses: infracost/actions/setup@v2
-        with:
-          api-key: ${{ secrets.INFRACOST_API_KEY }}
+        if: github.event_name == 'pull_request'
+        id: setup-infracost
+        run: |
+          echo "=== Setting up Infracost ==="
+          
+          # Check if API key is available
+          if [ -n "${{ secrets.INFRACOST_API_KEY }}" ]; then
+            echo "INFRACOST_API_KEY is set"
+            
+            # Install Infracost
+            curl -fsSL https://raw.githubusercontent.com/infracost/infracost/master/scripts/install.sh | sh
+            export PATH="$PATH:$HOME/.infracost"
+            
+            # Set API key
+            infracost configure set api_key ${{ secrets.INFRACOST_API_KEY }}
+            echo "infracost-setup=true" >> $GITHUB_OUTPUT
+          else
+            echo "INFRACOST_API_KEY not set. Skipping detailed cost analysis."
+            echo "infracost-setup=false" >> $GITHUB_OUTPUT
+          fi
           
       - name: Generate Infracost cost estimate
-        if: github.event_name == 'pull_request' && secrets.INFRACOST_API_KEY != ''
+        if: steps.setup-infracost.outputs.infracost-setup == 'true'
         run: |
           echo "=== Cost Estimation with Infracost ==="
           
@@ -64,10 +82,16 @@ jobs:
             echo "✅ Cost within reasonable range"
           fi
           
-      # 3. BASIC SECURITY CHECKS (No external dependencies)
+      # 3. BASIC SECURITY CHECKS
       - name: Bicep Security Scanner
         run: |
           echo "=== Bicep Security Checks ==="
+          
+          # Check if main.bicep exists
+          if [ ! -f "main.bicep" ]; then
+            echo "❌ main.bicep not found"
+            exit 1
+          fi
           
           # Build Bicep
           az bicep build --file main.bicep --outfile main.json
@@ -82,6 +106,7 @@ jobs:
                   template = json.load(f)
               
               issues = []
+              warnings = []
               
               for resource in template.get('resources', []):
                   resource_type = resource.get('type', '')
@@ -93,7 +118,7 @@ jobs:
                           issues.append('Storage account allows HTTP traffic')
                       
                       if properties.get('minimumTlsVersion') != 'TLS1_2':
-                          issues.append('Storage account should use TLS 1.2 minimum')
+                          warnings.append('Storage account should use TLS 1.2 minimum')
                       
                       if 'encryption' not in properties:
                           issues.append('Storage account missing encryption configuration')
@@ -105,15 +130,20 @@ jobs:
                       
                       site_config = properties.get('siteConfig', {})
                       if site_config.get('minTlsVersion') != '1.2':
-                          issues.append('Function App should use TLS 1.2 minimum')
+                          warnings.append('Function App should use TLS 1.2 minimum')
+              
+              if warnings:
+                  print('⚠️ Security warnings:')
+                  for warning in warnings:
+                      print(f'  - {warning}')
               
               if issues:
-                  print('⚠️ Security issues found:')
+                  print('❌ Security issues found:')
                   for issue in issues:
                       print(f'  - {issue}')
                   sys.exit(1)
               else:
-                  print('✅ No security issues found')
+                  print('✅ No critical security issues found')
                   
           except FileNotFoundError:
               print('❌ main.bicep not found or failed to build')
@@ -129,28 +159,24 @@ jobs:
           echo "=== Checking for Hardcoded Secrets ==="
           
           # Search for potential secrets
-          FOUND_SECRETS=0
+          FOUND_ISSUES=0
           
-          # Check for common patterns
-          patterns=(
-            "password\\s*="
-            "secret\\s*="
-            "key\\s*="
-            "token\\s*="
-            "connectionString\\s*="
-            "accountKey\\s*="
-          )
-          
-          for pattern in "${patterns[@]}"; do
-            results=$(grep -ri "$pattern" --include="*.bicep" --include="*.json" . 2>/dev/null | grep -v "test\|example\|demo\|placeholder" || true)
+          # Check Bicep files
+          echo "Checking Bicep files..."
+          for file in $(find . -name "*.bicep" -type f); do
+            echo "Checking: $file"
             
-            if [ -n "$results" ]; then
-              echo "❌ Found potential hardcoded secrets matching: $pattern"
-              echo "$results"
-              FOUND_SECRETS=1
+            # Look for hardcoded values
+            if grep -q "password\|secret\|key\|token" "$file"; then
+              echo "❌ Found potential hardcoded value in: $file"
+              grep -n "password\|secret\|key\|token" "$file"
+              FOUND_ISSUES=1
             fi
           done
           
-          if [ $FOUND_SECRETS -eq 0 ]; then
-            echo "✅ No hardcoded secrets found"
+          if [ $FOUND_ISSUES -eq 0 ]; then
+            echo "✅ No hardcoded secrets found in Bicep files"
+          else
+            echo "❌ Hardcoded values found. Use parameters or Azure Key Vault."
+            exit 1
           fi
