@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main, develop]
     paths:
-      - '**'
+      - 'infra/**'
       - '.github/workflows/validate-infra.yml'
 
 jobs:
@@ -16,32 +16,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
       
-      # ✅ UPDATED: Use Azure CLI action instead
-      - name: Setup Azure CLI with Bicep
+      # ✅ SIMPLIFIED: Just use Azure CLI - Bicep auto-installs
+      - name: Setup Azure CLI
         uses: azure/CLI@v1
-        with:
-          inlineScript: |
-            # Check Azure CLI version
-            az version
             
-            # Install Bicep if not present
-            if ! command -v bicep &> /dev/null; then
-              echo "Installing Bicep..."
-              az bicep install
-            fi
-            
-            # Verify Bicep installation
-            az bicep version
-            
-      # 1. LINTING - Check Bicep syntax and style
+      # 1. LINTING - Check Bicep syntax and style (USE az bicep)
       - name: Lint Bicep files
         run: |
           echo "=== Linting Bicep files ==="
           
-          # Check all .bicep files
+          # Check all .bicep files using az bicep
           find . -name "*.bicep" -type f | while read file; do
             echo "Linting: $file"
-            bicep lint "$file"
+            az bicep lint --file "$file"
           done
           
           # Check for required files
@@ -50,72 +37,67 @@ jobs:
             exit 1
           fi
           
-      # 2. COMPILATION - Build Bicep to ARM JSON
+      # 2. COMPILATION - Build Bicep to ARM JSON (USE az bicep)
       - name: Build Bicep to ARM
         run: |
           echo "=== Building Bicep files ==="
           
-          # Build main template
-          bicep build main.bicep --stdout
+          # Build main template using az bicep
+          az bicep build --file main.bicep --stdout
           
           # Build all modules
           for module in modules/*.bicep; do
             if [ -f "$module" ]; then
               echo "Building module: $module"
-              bicep build "$module" --stdout > /dev/null
+              az bicep build --file "$module" --stdout > /dev/null
             fi
           done
           
           echo "✅ All Bicep files compile successfully"
           
-      # 3. VALIDATION - ARM template validation
-      - name: ARM Template Validation
-        uses: azure/CLI@v1
-        with:
-          inlineScript: |
-            echo "=== Validating ARM Template ==="
-            
-            # Create compiled version
-            bicep build main.bicep --outfile main.json
-            
-            # Validate with Azure (requires login)
-            echo "Skipping Azure validation (no credentials)"
-            echo "To enable, add Azure login step"
-            # az deployment group validate \
-            #   --resource-group "test-validation-rg" \
-            #   --template-file main.json \
-            #   --parameters @environments/dev/main.bicepparam \
-            #   --no-pretty-print || echo "Validation completed"
-            
-      # 4. WHAT-IF ANALYSIS (without Azure login)
-      - name: Local What-If Analysis
+      # 3. BASIC VALIDATION
+      - name: Basic Validation
+        run: |
+          echo "=== Basic Validation ==="
+          
+          # Create compiled version using az bicep
+          az bicep build --file main.bicep --outfile main.json
+          
+          echo "✅ Compiled to ARM JSON: main.json"
+          
+          # Check file size
+          echo "File size: $(wc -l < main.json) lines"
+          
+      # 4. LOCAL ANALYSIS
+      - name: Local Analysis
         run: |
           echo "=== Running Local Analysis ==="
           
           # Check parameter files exist
-          echo "Checking parameter files:"
-          ls -la environments/ || echo "No environments directory"
-          
-          # Check for common issues
-          echo "Checking for common Bicep issues:"
-          
-          # Check for hardcoded values
-          if grep -r "hardcodedValue" . --include="*.bicep"; then
-            echo "⚠️ Found potentially hardcoded values"
+          if [ -d "environments" ]; then
+            echo "Checking parameter files:"
+            find environments -name "*.json" -o -name "*.bicepparam"
+          else
+            echo "⚠️ No environments directory found"
           fi
           
-          # Check for missing descriptions
-          echo "Checking for missing descriptions:"
-          grep -n "@description" main.bicep || echo "No descriptions found"
+          # Check for hardcoded values
+          echo "Checking for hardcoded values..."
+          if grep -ri "password\|secret\|key\|token" --include="*.bicep" --include="*.json" . 2>/dev/null | grep -v "test\|example\|demo\|placeholder"; then
+            echo "⚠️ Found potentially sensitive values"
+            exit 1
+          fi
           
-      # 5. DEPENDENCY CHECK
+          echo "✅ No hardcoded values found"
+          
+      # 5. DEPENDENCY CHECK (USE az bicep)
       - name: Check Dependencies
         run: |
           echo "=== Checking Bicep Dependencies ==="
           
-          # Create dependency graph
-          bicep build main.bicep --outfile main.json
+          # Create compiled version
+          az bicep build --file main.bicep --outfile main.json
           
           # Check module imports
-          echo "Module imports:"
-          find modules -name "*.bicep" -exec grep -l "module " {} \; || echo "No module imports"
+          echo "Module imports found in:"
+          find . -name "*.bicep" -exec grep -l "module " {} \; 2>/dev/null || echo "No module imports found"
