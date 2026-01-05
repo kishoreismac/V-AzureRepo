@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main, develop]
     paths:
-      - '**'
+      - 'infra/**'
       - '.github/workflows/validate-infra.yml'
 
 jobs:
@@ -132,7 +132,7 @@ jobs:
             az bicep lint --file "$bicepparam"
           done
           
-      # 4. BUILD VALIDATION
+      # 4. BUILD VALIDATION - FIXED PARAMETERS FLAG
       - name: Build Bicep Validation
         run: |
           echo "=== Building Bicep Files ==="
@@ -160,10 +160,21 @@ jobs:
           FIRST_ENV=$(find environments -name "main.bicepparam" -type f 2>/dev/null | head -1)
           if [ -n "$FIRST_ENV" ]; then
             echo "Testing with: $FIRST_ENV"
+            
+            # ✅ FIXED: For .bicepparam files, just pass the file directly
             az bicep build --file main.bicep --parameters "$FIRST_ENV" --stdout > /dev/null
             echo "✅ Builds successfully with parameters"
           else
             echo "⚠️ No main.bicepparam files found to test parameterized build"
+            
+            # Try JSON parameters as fallback
+            FIRST_JSON=$(find environments -name "parameters*.json" -type f 2>/dev/null | head -1)
+            if [ -n "$FIRST_JSON" ]; then
+              echo "Testing with JSON parameters: $FIRST_JSON"
+              # ✅ FIXED: For JSON files, use @filename
+              az bicep build --file main.bicep --parameters "@$FIRST_JSON" --stdout > /dev/null
+              echo "✅ Builds successfully with JSON parameters"
+            fi
           fi
           
       # 5. SECURITY CHECKS
