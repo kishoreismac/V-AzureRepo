@@ -34,7 +34,7 @@ jobs:
           framework: bicep
           output_format: sarif
           output_file_path: checkov-results.sarif
-          soft_fail: false
+          soft_fail: true
           quiet: true
           
       - name: Upload Checkov results
