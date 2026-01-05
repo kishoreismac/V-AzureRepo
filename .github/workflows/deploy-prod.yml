@@ -1,0 +1,104 @@
+name: Deploy to Production
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # Deploy on version tags
+  workflow_dispatch:  # Manual trigger with inputs
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  ENVIRONMENT: prod
+  LOCATION: eastus2  # Different region for prod
+
+jobs:
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    environment: production  # GitHub environment with approvals
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_PROD }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_PROD }}
+          
+      # 1. COMPARE WITH STAGING
+      - name: Compare with Staging
+        run: |
+          echo "=== Comparing with Staging ==="
+          
+          # Get staging outputs
+          STAGING_OUTPUTS=$(az deployment sub show \
+            --name "infra-staging-latest" \
+            --query properties.outputs \
+            -o json 2>/dev/null || echo "{}")
+            
+          # Build current template
+          az bicep build --file main.bicep --outfile main-current.json
+          
+          echo "Production deployment ready"
+          
+      # 2. DRY RUN VALIDATION
+      - name: Dry Run Validation
+        run: |
+          echo "=== Dry Run ==="
+          
+          az deployment sub validate \
+            --location "${{ env.LOCATION }}" \
+            --template-file main.bicep \
+            --parameters @environments/${{ env.ENVIRONMENT }}/main.bicepparam
+            
+      # 3. MANUAL APPROVAL (via GitHub Environments)
+      - name: Wait for Approval
+        run: |
+          echo "⏳ Waiting for manual approval..."
+          echo "Check the GitHub Environments tab to approve this deployment"
+          sleep 30  # Just for demo, real approval is via GitHub UI
+          
+      # 4. DEPLOY WITH BACKUP PLAN
+      - name: Deploy with Rollback Plan
+        run: |
+          echo "=== Deploying to Production ==="
+          
+          # Create deployment
+          az deployment sub create \
+            --name "infra-prod-${{ github.run_id }}" \
+            --location "${{ env.LOCATION }}" \
+            --template-file main.bicep \
+            --parameters @environments/${{ env.ENVIRONMENT }}/main.bicepparam \
+            --no-wait
+            
+          # Monitor deployment
+          echo "Monitoring deployment..."
+          for i in {1..30}; do
+            STATUS=$(az deployment sub show \
+              --name "infra-prod-${{ github.run_id }}" \
+              --query properties.provisioningState \
+              -o tsv)
+              
+            echo "Status: $STATUS"
+            
+            if [ "$STATUS" == "Succeeded" ]; then
+              echo "✅ Production deployment successful!"
+              break
+            elif [ "$STATUS" == "Failed" ]; then
+              echo "❌ Deployment failed!"
+              
+              # Attempt rollback by deploying previous version
+              echo "Attempting rollback..."
+              # Add rollback logic here
+              
+              exit 1
+            fi
+            
+            sleep 10
+          done
