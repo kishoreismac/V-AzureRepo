@@ -17,35 +17,61 @@ env:
 
 jobs:
   deploy:
+    name: Deploy to Development
     runs-on: ubuntu-latest
-    environment: dev
-    
-    env:
-      DEPLOYMENT_NAME: deploy-$(date +%Y%m%d-%H%M%S)
+    environment: development  # GitHub environment
     
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
-        
-      - name: Azure Login
-        uses: azure/login@v1
+      
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_DEV }}
           
-      - name: Run What-If
+      # 1. PRE-DEPLOYMENT VALIDATION
+      - name: Pre-deployment Validation
         run: |
+          echo "=== Pre-deployment Validation ==="
+          
+          # Validate Bicep
+          az bicep build --file main.bicep
+          
+          # Check parameter file exists
+          if [ ! -f "environments/${{ env.ENVIRONMENT }}/main.bicepparam" ]; then
+            echo "❌ Parameters file not found"
+            exit 1
+          fi
+          
+      # 2. WHAT-IF DEPLOYMENT
+      - name: What-If Deployment
+        run: |
+          echo "=== What-If Analysis ==="
+          
           az deployment sub what-if \
-            --location eastus \
+            --name "${{ env.DEPLOYMENT_NAME }}-whatif" \
+            --location "${{ env.LOCATION }}" \
             --template-file main.bicep \
-            --parameters environments/dev/main.bicepparam
+            --parameters environments/${{ env.ENVIRONMENT }}/main.bicepparam \
+            --no-pretty-print
             
+      # 3. ACTUAL DEPLOYMENT
       - name: Deploy Infrastructure
         run: |
+          echo "=== Deploying Infrastructure ==="
+          
           az deployment sub create \
-            --location eastus \
+            --name "${{ env.DEPLOYMENT_NAME }}" \
+            --location "${{ env.LOCATION }}" \
             --template-file main.bicep \
-            --parameters environments/dev/main.bicepparam \
-            --name "${{ env.DEPLOYMENT_NAME }}"
+            --parameters environments/${{ env.ENVIRONMENT }}/main.bicepparam \
+            --only-show-errors
+            
+          echo "✅ Deployment completed!"
+          
             
       - name: Run Smoke Tests
         run: |
