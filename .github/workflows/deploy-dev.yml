@@ -1,12 +1,10 @@
 name: Deploy to Development
 
 on:
-  push:
+  workflow_run:
+    workflows: ["Validate Infrastructure (Bicep)", "Infrastructure Security Scan", "Infrastructure Integration Tests"]
+    types: [completed]
     branches: [develop]
-    paths:
-      - '**'
-      - '.github/workflows/deploy-dev.yml'
-  workflow_dispatch:  # Manual trigger
 
 permissions:
   id-token: write
@@ -57,7 +55,7 @@ jobs:
             --name "${{ env.DEPLOYMENT_NAME }}-whatif" \
             --location "${{ env.LOCATION }}" \
             --template-file main.bicep \
-            --parameters @environments/${{ env.ENVIRONMENT }}/main.bicepparam \
+            --parameters environments/${{ env.ENVIRONMENT }}/main.bicepparam \
             --no-pretty-print
             
       # 3. ACTUAL DEPLOYMENT
@@ -69,7 +67,7 @@ jobs:
             --name "${{ env.DEPLOYMENT_NAME }}" \
             --location "${{ env.LOCATION }}" \
             --template-file main.bicep \
-            --parameters @environments/${{ env.ENVIRONMENT }}/main.bicepparam \
+            --parameters environments/${{ env.ENVIRONMENT }}/main.bicepparam \
             --only-show-errors
             
           echo "✅ Deployment completed!"
