@@ -4,6 +4,7 @@ on:
   push:
     branches: [develop]
     paths:
+      - ./environments/dev/**
       - '.github/workflows/deploy-dev.yml'
   workflow_dispatch:  # Manual trigger
 

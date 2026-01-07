@@ -199,6 +199,14 @@ module rbacAssignments 'modules/rbac.bicep' = {
   }
 }
 
+module policies 'modules/policy_assignment.bicep' = if(environmentName == 'dev') {
+  name: 'policies'
+  scope: rg
+  params: {
+    environmentName: environmentName
+  }
+}
+
 // ----------------------------
 // Outputs
 // ----------------------------
@@ -212,3 +220,6 @@ output APPLICATIONINSIGHTS_CONNECTION_STRING string = applicationInsights.output
 output AZURE_FUNCTION_NAME string = functionApp.outputs.name
 output FUNCTION_IDENTITY_PRINCIPAL_ID string = functionApp.outputs.principalId
 output DEPLOYMENT_BLOB_CONTAINER_URI string = deploymentBlobContainerUri
+// Add to outputs in main.bicep
+output HTTPS_POLICY_ASSIGNMENT_ID string = policies.outputs.httpsPolicyAssignmentId
+output HTTPS_POLICY_ASSIGNMENT_NAME string = policies.outputs.httpsPolicyAssignmentName

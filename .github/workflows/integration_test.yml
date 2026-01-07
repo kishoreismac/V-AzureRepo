@@ -1,0 +1,178 @@
+name: Infrastructure Integration Tests
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - '*.bicep'
+      - 'modules/**'
+      - 'environments/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  integration-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Setup Azure CLI
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            az version
+            echo "Azure CLI ready"
+            
+      - name: Validate Module Dependencies
+        run: |
+          echo "=== Checking Module Dependencies ==="
+          
+          python3 << 'EOF'
+          import os
+          import re
+          import sys
+          
+          module_deps = {}
+          all_modules = []
+          
+          # Collect all module files
+          for root, dirs, files in os.walk('modules'):
+              for file in files:
+                  if file.endswith('.bicep'):
+                      all_modules.append(file)
+          
+          # Check each module for dependencies
+          for module in all_modules:
+              module_path = os.path.join('modules', module)
+              with open(module_path, 'r') as f:
+                  content = f.read()
+              
+              # Find dependencies on other modules
+              deps = re.findall(r'\.\./(.*?\.bicep)', content)
+              if deps:
+                  module_deps[module] = [d for d in deps if d in all_modules]
+          
+          # Check for circular dependencies
+          def check_circular(start, visited=None):
+              if visited is None:
+                  visited = []
+              if start in visited:
+                  return True, visited
+              
+              visited.append(start)
+              for dep in module_deps.get(start, []):
+                  circular, path = check_circular(dep, visited.copy())
+                  if circular:
+                      return True, path
+              return False, visited
+          
+          circular_found = False
+          for module in all_modules:
+              circular, path = check_circular(module)
+              if circular:
+                  print(f"❌ Circular dependency found: {' -> '.join(path)}")
+                  circular_found = True
+          
+          if circular_found:
+              sys.exit(1)
+          
+          print("✅ No circular dependencies found")
+          EOF
+          
+      - name: Validate Outputs Match Module Contracts
+        run: |
+          echo "=== Validating Module Outputs ==="
+          
+          python3 << 'EOF'
+          import os
+          import re
+          import json
+          
+          # Read main.bicep to understand expected outputs
+          with open('main.bicep', 'r') as f:
+              main_content = f.read()
+          
+          # Extract module references from main.bicep
+          module_pattern = r"module (\w+) 'modules/(\w+\.bicep)'"
+          modules_in_main = re.findall(module_pattern, main_content)
+          
+          print(f"Found {len(modules_in_main)} modules in main.bicep")
+          
+          # Check each module has required outputs
+          for module_alias, module_file in modules_in_main:
+              module_path = os.path.join('modules', module_file)
+              
+              if not os.path.exists(module_path):
+                  print(f"❌ Module file not found: {module_file}")
+                  continue
+              
+              with open(module_path, 'r') as f:
+                  content = f.read()
+              
+              # Check for outputs section
+              if 'output ' not in content:
+                  print(f"⚠️ Module {module_file} has no outputs defined")
+                  
+              # Check this module is used in main.bicep outputs
+              output_pattern = rf"{module_alias}\.outputs\.\w+"
+              if not re.search(output_pattern, main_content):
+                  print(f"⚠️ Module {module_alias} outputs are not used in main.bicep")
+          
+          print("✅ Module output validation complete")
+          EOF
+          
+      - name: Validate Environment Parameters Consistency
+        run: |
+          echo "=== Validating Environment Parameters ==="
+          
+          python3 << 'EOF'
+          import os
+          import json
+          
+          def get_param_names_from_bicep(filepath):
+              """Extract parameter names from .bicep or .bicepparam file"""
+              params = []
+              try:
+                  with open(filepath, 'r') as f:
+                      for line in f:
+                          line = line.strip()
+                          if line.startswith('param ') or line.startswith('using '):
+                              continue
+                          # Simple extraction - for production use proper parsing
+                          if 'param' in line and 'string' in line:
+                              parts = line.split()
+                              for i, part in enumerate(parts):
+                                  if part == 'param' and i + 1 < len(parts):
+                                      params.append(parts[i + 1])
+                                      break
+              except:
+                  pass
+              return params
+          
+          # Get parameters from main.bicep
+          main_params = get_param_names_from_bicep('main.bicep')
+          print(f"Main.bicep parameters: {main_params}")
+          
+          # Check each environment has consistent parameters
+          for env in ['dev', 'staging', 'prod']:
+              param_file = f'environments/{env}/main.bicepparam'
+              if os.path.exists(param_file):
+                  print(f"\nChecking {env}...")
+                  
+                  # Simple check - ensure file is not empty
+                  with open(param_file, 'r') as f:
+                      content = f.read()
+                      
+                  if 'using' not in content:
+                      print(f"❌ {env}/main.bicepparam missing 'using' statement")
+                  elif len(content.strip()) < 20:
+                      print(f"⚠️ {env}/main.bicepparam seems under-configured")
+                  else:
+                      print(f"✅ {env} parameter file looks valid")
+          EOF
