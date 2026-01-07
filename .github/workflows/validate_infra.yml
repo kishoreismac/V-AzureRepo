@@ -5,7 +5,7 @@ on:
     branches: [main, develop]
     paths:
       - '*.bicep'
-      - '././.github/workflows/validate-infra.yml'
+      - '.github/workflows/validate_infra.yml'
 
 jobs:
   validate-bicep:
