@@ -250,5 +250,5 @@ jobs:
                   print(f"  - {issue}")
               exit(1)
           else:
-              print("✅ No hardcoded secrets found")
+              print("✅ No hardcoded secrets found ")
           EOF
