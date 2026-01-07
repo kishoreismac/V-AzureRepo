@@ -24,7 +24,7 @@ jobs:
             az version
             echo "✅ Azure CLI ready"
             
-      # 1. BASIC STRUCTURE VALIDATION
+      # 1. BASIC  STRUCTURE VALIDATION
       - name: Validate Structure
         run: |
           echo "=== Validating Repository Structure ==="
