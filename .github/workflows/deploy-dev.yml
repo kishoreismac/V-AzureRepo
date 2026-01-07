@@ -4,7 +4,7 @@ on:
   workflow_run:
     workflows: ["Validate Infrastructure (Bicep)", "Infrastructure Security Scan", "Infrastructure Integration Tests"]
     types: [completed]
-    branches: [main, develop]
+    branches: [develop]
 
 permissions:
   id-token: write
