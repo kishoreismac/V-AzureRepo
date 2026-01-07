@@ -17,62 +17,36 @@ env:
 
 jobs:
   deploy:
-    name: Deploy to Development
     runs-on: ubuntu-latest
-    environment: development  # GitHub environment
+    environment: dev
+    
+    env:
+      DEPLOYMENT_NAME: deploy-$(date +%Y%m%d-%H%M%S)
     
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
-      
-      - name: Azure Login (OIDC)
-        uses: azure/login@v2
+        
+      - name: Azure Login
+        uses: azure/login@v1
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_DEV }}
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
           
-      # 1. PRE-DEPLOYMENT VALIDATION
-      - name: Pre-deployment Validation
+      - name: Run What-If
         run: |
-          echo "=== Pre-deployment Validation ==="
-          
-          # Validate Bicep
-          az bicep build --file main.bicep
-          
-          # Check parameter file exists
-          if [ ! -f "environments/${{ env.ENVIRONMENT }}/main.bicepparam" ]; then
-            echo "❌ Parameters file not found"
-            exit 1
-          fi
-          
-      # 2. WHAT-IF DEPLOYMENT
-      - name: What-If Deployment
-        run: |
-          echo "=== What-If Analysis ==="
-          
           az deployment sub what-if \
-            --name "${{ env.DEPLOYMENT_NAME }}-whatif" \
-            --location "${{ env.LOCATION }}" \
+            --location eastus \
             --template-file main.bicep \
-            --parameters environments/${{ env.ENVIRONMENT }}/main.bicepparam \
-            --no-pretty-print
+            --parameters environments/dev/main.bicepparam
             
-      # 3. ACTUAL DEPLOYMENT
       - name: Deploy Infrastructure
         run: |
-          echo "=== Deploying Infrastructure ==="
-          
           az deployment sub create \
-            --name "${{ env.DEPLOYMENT_NAME }}" \
-            --location "${{ env.LOCATION }}" \
+            --location eastus \
             --template-file main.bicep \
-            --parameters environments/${{ env.ENVIRONMENT }}/main.bicepparam \
-            --only-show-errors
+            --parameters environments/dev/main.bicepparam \
+            --name "${{ env.DEPLOYMENT_NAME }}"
             
-          echo "✅ Deployment completed!"
-          
-      # 4. POST-DEPLOYMENT SMOKE TESTS
       - name: Run Smoke Tests
         run: |
           echo "=== Running Smoke Tests ==="
@@ -83,15 +57,15 @@ jobs:
             --query properties.outputs \
             -o json)
           
-          # Extract values
-          FUNCTION_APP_NAME=$(echo $OUTPUTS | jq -r '.functionAppName.value')
-          STORAGE_NAME=$(echo $OUTPUTS | jq -r '.storageAccountName.value')
+          # Extract values using CORRECT output names
+          FUNCTION_APP_NAME=$(echo $OUTPUTS | jq -r '.AZURE_FUNCTION_NAME.value')
+          STORAGE_NAME=$(echo $OUTPUTS | jq -r '.STORAGE_ACCOUNT_NAME.value')
+          RESOURCE_GROUP=$(echo $OUTPUTS | jq -r '.RESOURCE_GROUP_NAME.value')
           
-          # Test resource existence
           echo "Checking deployed resources..."
           
           # Check Function App
-          if az functionapp show --name $FUNCTION_APP_NAME --resource-group ${{ secrets.RESOURCE_GROUP_DEV }} &> /dev/null; then
+          if az functionapp show --name "$FUNCTION_APP_NAME" --resource-group "$RESOURCE_GROUP" &> /dev/null; then
             echo "✅ Function App exists"
           else
             echo "❌ Function App not found"
@@ -99,21 +73,11 @@ jobs:
           fi
           
           # Check Storage Account
-          if az storage account show --name $STORAGE_NAME --resource-group ${{ secrets.RESOURCE_GROUP_DEV }} &> /dev/null; then
+          if az storage account show --name "$STORAGE_NAME" --resource-group "$RESOURCE_GROUP" &> /dev/null; then
             echo "✅ Storage Account exists"
           else
             echo "❌ Storage Account not found"
             exit 1
           fi
           
-      # 5. CLEANUP TEST RESOURCES
-      - name: Cleanup Test Resources
-        if: always()
-        run: |
-          echo "=== Cleaning up test resources ==="
-          
-          # Delete test validation resource group
-          az group delete \
-            --name "test-validation-rg" \
-            --yes \
-            --no-wait || true
+          echo "✅ Smoke tests passed!"
