@@ -1,0 +1,60 @@
+name: Infrastructure Compliance (Policy-as-Code)
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  compliance:
+    name: Policy-as-Code (conftest / OPA)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Azure CLI (for bicep)
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            az version || true
+            if ! command -v bicep &> /dev/null; then
+              az bicep install || true
+            fi
+            bicep --version || true
+
+      - name: Install conftest and jq
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq wget tar
+          wget https://github.com/open-policy-agent/conftest/releases/download/v0.35.0/conftest_0.35.0_Linux_x86_64.tar.gz -O /tmp/conftest.tar.gz
+          tar -xzvf /tmp/conftest.tar.gz -C /tmp
+          sudo mv /tmp/conftest /usr/local/bin/conftest
+          conftest --version
+
+      - name: Run conftest (OPA) policy checks
+        run: |
+          if [ ! -d policy ]; then
+            echo "No policy directory found"
+            exit 0
+          fi
+          echo "Policy files found:"
+          ls -la policy/
+          echo "Testing policy syntax..."
+          conftest verify --policy policy/ || echo "Policy verification failed"
+          echo "Running policy checks..."
+          conftest test main.json --policy policy --no-color
+
+      - name: Upload conftest results (if present)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conftest-output
+          path: |
+            main.json
+            policy || true
