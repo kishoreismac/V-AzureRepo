@@ -1,4 +1,4 @@
-package infra.ensure-tags
+package infra.ensure_tags
 
 deny[msg] {
   resource := data.main.all_resources[_]

@@ -1,13 +1,13 @@
 package main
 
 # Import all policies
-import data.infra.allowed-skus
-import data.infra.disallow-public_blob_access
-import data.infra.ensure-private-endpoints
-import data.infra.ensure-tags
-import data.infra.no-public-ip
-import data.infra.require-diagnostic-settings
-import data.infra.require-https
+import data.infra.allowed_skus
+import data.infra.disallow_public_blob_access
+import data.infra.ensure_private_endpoints
+import data.infra.ensure_tags
+import data.infra.no-public_ip
+import data.infra.require_diagnostic_settings
+import data.infra.require_https
 
 # Collect all resources from nested deployments
 all_resources[resource] {
@@ -22,15 +22,15 @@ deny[msg] {
 }
 
 deny[msg] {
-    msg := infra.disallow-public_blob_access.deny[_]
+    msg := infra.disallow_public_blob_access.deny[_]
 }
 
 deny[msg] {
-    msg := infra.require_private_endpoints.deny[_]
+    msg := infra.enforce_private_endpoints.deny[_]
 }
 
 deny[msg] {
-    msg := infra.ensure-tags.deny[_]
+    msg := infra.ensure_tags.deny[_]
 }
 
 deny[msg] {

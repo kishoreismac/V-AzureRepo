@@ -1,4 +1,4 @@
-package infra.disallow-public_blob_access
+package infra.disallow_public_blob_access
 
 deny[msg] {
   resource := data.main.all_resources[_]

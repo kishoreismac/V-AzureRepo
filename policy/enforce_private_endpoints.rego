@@ -1,4 +1,4 @@
-package infra.ensure-private-endpoints
+package infra.enforce_private_endpoints
 
 # Example: require storage accounts to restrict public access via networkAcls
 deny[msg] {
