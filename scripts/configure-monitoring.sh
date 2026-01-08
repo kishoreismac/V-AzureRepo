@@ -35,26 +35,38 @@ fi
 
 enable_diag() {
   local resource_id="$1"
-  az monitor diagnostic-settings create \
-    --name "diag-to-law" \
-    --resource "$resource_id" \
-    --workspace "$WORKSPACE_ID" \
-    --logs '[{"category":"FunctionAppLogs","enabled":true},{"category":"AppServiceHTTPLogs","enabled":true}]' \
-    --metrics '[{"category":"AllMetrics","enabled":true}]' \
-    --only-show-errors || echo "Failed to add diagnostic setting for $resource_id"
+  local resource_type="$2"
+  
+  if [[ "$resource_type" == "functionapp" ]]; then
+    az monitor diagnostic-settings create \
+      --name "diag-to-law" \
+      --resource "$resource_id" \
+      --workspace "$WORKSPACE_ID" \
+      --logs '[{"category":"FunctionAppLogs","enabled":true},{"category":"AppServiceHTTPLogs","enabled":true}]' \
+      --metrics '[{"category":"AllMetrics","enabled":true}]' \
+      --only-show-errors || echo "Failed to add diagnostic setting for $resource_id"
+  elif [[ "$resource_type" == "storage" ]]; then
+    # Storage accounts have different log categories and need resource-specific configuration
+    az monitor diagnostic-settings create \
+      --name "diag-to-law" \
+      --resource "$resource_id" \
+      --workspace "$WORKSPACE_ID" \
+      --metrics '[{"category":"AllMetrics","enabled":true}]' \
+      --only-show-errors || echo "Failed to add diagnostic setting for $resource_id"
+  fi
 }
 
 if [ -n "$FUNCTION_APP" ]; then
   FA_ID=$(az functionapp show --name "$FUNCTION_APP" --resource-group "$RG" --query id -o tsv 2>/dev/null || true)
   if [ -n "$FA_ID" ]; then
-    enable_diag "$FA_ID"
+    enable_diag "$FA_ID" "functionapp"
   fi
 fi
 
 if [ -n "$STORAGE" ]; then
   SA_ID=$(az storage account show --name "$STORAGE" --resource-group "$RG" --query id -o tsv 2>/dev/null || true)
   if [ -n "$SA_ID" ]; then
-    enable_diag "$SA_ID"
+    enable_diag "$SA_ID" "storage"
   fi
 fi
 

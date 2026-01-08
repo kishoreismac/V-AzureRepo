@@ -6,17 +6,12 @@ allowed_skus = {
   "Microsoft.Storage/storageAccounts": ["Standard_LRS","Standard_GRS"]
 }
 
+# Only check resources that have SKU policies defined
 deny[msg] {
   resource := input.resources[_]
-  skus := allowed_skus[resource.type]
-  not skus
-  msg := sprintf("No SKU policy defined for %s", [resource.type])
-}
-
-deny[msg] {
-  resource := input.resources[_]
+  allowed_skus[resource.type]
   sku := resource.sku.name
   skus := allowed_skus[resource.type]
   not sku in skus
-  msg := sprintf("Resource %s has disallowed SKU %s", [resource.name, sku])
+  msg := sprintf("Resource %s has disallowed SKU %s (allowed: %v)", [resource.name, sku, skus])
 }

@@ -36,10 +36,10 @@ jobs:
               "https://api.github.com/repos/$REPO/actions/runs?event=push&per_page=100")
             ok=$(echo "$runs" | jq -r --arg wf "$wf_name" --arg sha "$HEAD_SHA" '.workflow_runs[] | select(.name==$wf and .head_sha==$sha) | .conclusion' | head -n1)
             if [ "$ok" = "success" ]; then
-              echo "$wf passed for sha $sha"
+              echo "$wf passed for sha $HEAD_SHA"
               return 0
             else
-              echo "$wf did not pass for sha $sha (status: $ok)"
+              echo "$wf did not pass for sha $HEAD_SHA (status: $ok)"
               return 1
             fi
           }
