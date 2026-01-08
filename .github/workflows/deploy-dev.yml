@@ -107,3 +107,32 @@ jobs:
           fi
           
           echo "✅ Smoke tests passed!"
+          
+      # 4. POST-DEPLOY MONITORING CONFIGURATION
+      - name: Configure Monitoring
+        run: |
+          echo "=== Configuring Post-Deploy Monitoring ==="
+          
+          # Make script executable
+          chmod +x scripts/configure-monitoring.sh
+          
+          # Get deployment outputs
+          OUTPUTS=$(az deployment sub show \
+            --name "${{ env.DEPLOYMENT_NAME }}" \
+            --query properties.outputs \
+            -o json)
+          
+          RESOURCE_GROUP=$(echo $OUTPUTS | jq -r '.RESOURCE_GROUP_NAME.value')
+          FUNCTION_APP_NAME=$(echo $OUTPUTS | jq -r '.AZURE_FUNCTION_NAME.value')
+          LOG_ANALYTICS_NAME=$(echo $OUTPUTS | jq -r '.LOG_ANALYTICS_NAME.value')
+          APP_INSIGHTS_NAME=$(echo $OUTPUTS | jq -r '.APPLICATION_INSIGHTS_NAME.value')
+          
+          # Run monitoring configuration script
+          ./scripts/configure-monitoring.sh \
+            --resource-group "$RESOURCE_GROUP" \
+            --function-app "$FUNCTION_APP_NAME" \
+            --log-analytics "$LOG_ANALYTICS_NAME" \
+            --app-insights "$APP_INSIGHTS_NAME" \
+            --environment "${{ env.ENVIRONMENT }}"
+          
+          echo "✅ Monitoring configured!"
