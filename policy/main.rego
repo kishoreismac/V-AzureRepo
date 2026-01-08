@@ -5,7 +5,7 @@ import data.infra.allowed_skus
 import data.infra.disallow_public_blob_access
 import data.infra.ensure_private_endpoints
 import data.infra.ensure_tags
-import data.infra.no-public_ip
+import data.infra.no_public_ip
 import data.infra.require_diagnostic_settings
 import data.infra.require_https
 
