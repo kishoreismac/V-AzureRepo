@@ -29,7 +29,8 @@ fi
 
 WORKSPACE_ID=$(az monitor log-analytics workspace show --resource-group "$RG" --workspace-name "$LAW" --query id -o tsv 2>/dev/null || true)
 if [ -z "$WORKSPACE_ID" ]; then
-  az monitor log-analytics workspace create --resource-group "$RG" --workspace-name "$LAW" --location $(az group show -n "$RG" --query location -o tsv) --sku PerGB2018 --query id -o tsv
+  LOCATION=$(az group show -n "$RG" --query location -o tsv)
+  az monitor log-analytics workspace create --resource-group "$RG" --workspace-name "$LAW" --location "$LOCATION" --sku PerGB2018 --query id -o tsv
   WORKSPACE_ID=$(az monitor log-analytics workspace show --resource-group "$RG" --workspace-name "$LAW" --query id -o tsv)
 fi
 

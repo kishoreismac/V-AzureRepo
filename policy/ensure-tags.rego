@@ -9,6 +9,6 @@ deny[msg] {
 deny[msg] {
   resource := input.resources[_]
   resource.tags
-  not resource.tags["environment"]
-  msg := sprintf("Resource %s does not have an 'environment' tag", [resource.name])
+  not resource.tags["azd-env-name"]
+  msg := sprintf("Resource %s does not have an 'azd-env-name' tag", [resource.name])
 }

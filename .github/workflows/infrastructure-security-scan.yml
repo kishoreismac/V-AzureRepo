@@ -43,14 +43,13 @@ jobs:
 
       - name: Lint Bicep files
         run: |
-          if command -v bicep >/dev/null 2>&1; then
-            for f in $(find . -name '*.bicep'); do
-              echo "Linting $f"
-              bicep build "$f" --stdout > /dev/null || { echo "bicep build failed for $f"; exit 1; }
-            done
-          else
-            echo "bicep CLI not found (install via az bicep install in runner)"; exit 1
-          fi
+          # Install Bicep CLI
+          az bicep install
+          
+          for f in $(find . -name '*.bicep'); do
+            echo "Linting $f"
+            bicep build "$f" --stdout > /dev/null || { echo "bicep build failed for $f"; exit 1; }
+          done
 
       - name: Run Checkov against compiled ARM (main.json)
         id: checkov

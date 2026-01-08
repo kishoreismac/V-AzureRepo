@@ -32,9 +32,12 @@ jobs:
           check_workflow() {
             wf_name="$1"
             echo "Checking workflow: $wf_name"
-            runs=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \ 
-              "https://api.github.com/repos/$REPO/actions/runs?event=push&per_page=100")
-            ok=$(echo "$runs" | jq -r --arg wf "$wf_name" --arg sha "$HEAD_SHA" '.workflow_runs[] | select(.name==$wf and .head_sha==$sha) | .conclusion' | head -n1)
+            # Fetch recent workflow runs and filter by workflow name and SHA
+            # Using per_page=100 to get sufficient history for validation
+            runs=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+              "https://api.github.com/repos/$REPO/actions/runs?per_page=100")
+            ok=$(echo "$runs" | jq -r --arg wf "$wf_name" --arg sha "$HEAD_SHA" \
+              '.workflow_runs[] | select(.name==$wf and .head_sha==$sha) | .conclusion' | head -n1)
             if [ "$ok" = "success" ]; then
               echo "$wf passed for sha $HEAD_SHA"
               return 0
