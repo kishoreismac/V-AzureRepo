@@ -1,7 +1,7 @@
-package infra.ensure_tags
+package main
 
 deny[msg] {
-  resource := data.main.all_resources[_]
+  resource := all_resources[_]
   # Skip resource types that might not support tags
   resource.type != "Microsoft.Storage/storageAccounts/blobServices"
   resource.type != "Microsoft.Storage/storageAccounts/blobServices/containers"
@@ -12,14 +12,14 @@ deny[msg] {
 }
 
 deny[msg] {
-  resource := data.main.all_resources[_]
+  resource := all_resources[_]
   resource.tags
   not resource.tags["environment"]
   msg := sprintf("Resource %s does not have an 'environment' tag", [resource.name])
 }
 
 deny[msg] {
-  resource := data.main.all_resources[_]
+  resource := all_resources[_]
   resource.tags
   not resource.tags["owner"]
   msg := sprintf("Resource %s does not have an 'owner' tag", [resource.name])

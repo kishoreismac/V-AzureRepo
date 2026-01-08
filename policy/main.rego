@@ -1,9 +1,11 @@
 package main
 
-# Import all policies
+# Import all policies - use correct package names
 import data.infra.allowed_skus
+# If your file is disallow_public_blob_access.rego, the package should be infra.disallow_public_blob_access
 import data.infra.disallow_public_blob_access
-import data.infra.ensure_private_endpoints
+# If your file is enforce_private_endpoints.rego, the package should be infra.enforce_private_endpoints
+import data.infra.enforce_private_endpoints
 import data.infra.ensure_tags
 import data.infra.no_public_ip
 import data.infra.require_diagnostic_settings
@@ -16,31 +18,43 @@ all_resources[resource] {
     resource := deployment.properties.template.resources[_]
 }
 
-# Forward deny rules using the collected resources
+# Forward deny rules - FIXED: use 'some' to avoid unsafe variable errors
 deny[msg] {
-    msg := infra.allowed_skus.deny[_]
+    some i
+    msg := infra.allowed_skus.deny[i]
 }
 
 deny[msg] {
-    msg := infra.disallow_public_blob_access.deny[_]
+    some i
+    msg := infra.disallow_public_blob_access.deny[i]
 }
 
 deny[msg] {
-    msg := infra.enforce_private_endpoints.deny[_]
+    some i
+    msg := infra.enforce_private_endpoints.deny[i]
 }
 
 deny[msg] {
-    msg := infra.ensure_tags.deny[_]
+    some i
+    msg := infra.ensure_tags.deny[i]
 }
 
 deny[msg] {
-    msg := infra.no_public_ip.deny[_]
+    some i
+    msg := infra.no_public_ip.deny[i]
 }
 
 deny[msg] {
-    msg := infra.require_diagnostic_settings.deny[_]
+    some i
+    msg := infra.require_diagnostic_settings.deny[i]
 }
 
 deny[msg] {
-    msg := infra.require_https.deny[_]
+    some i
+    msg := infra.require_https.deny[i]
+}
+
+# Debug rule to test
+deny["Test: Policy evaluation is working"] {
+    true
 }

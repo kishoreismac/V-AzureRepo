@@ -1,4 +1,4 @@
-package infra.allowed_skus
+package main  # Changed from infra.allowed_skus
 
 # Example mapping - customize per your org
 allowed_skus = {
@@ -10,14 +10,14 @@ allowed_skus = {
 
 # Deny resources that don't have a SKU policy defined
 deny[msg] {
-  resource := data.main.all_resources[_]
+  resource := all_resources[_]  # Changed from data.main.all_resources[_]
   skus := allowed_skus[resource.type]
   not skus
   msg := sprintf("No SKU policy defined for %s - add to allowed_skus mapping", [resource.type])
 }
 
 deny[msg] {
-  resource := data.main.all_resources[_]
+  resource := all_resources[_]  # Changed from data.main.all_resources[_]
   resource.type == "Microsoft.Storage/storageAccounts"
   skus := allowed_skus[resource.type]
   sku := resource.sku.name
@@ -26,7 +26,7 @@ deny[msg] {
 }
 
 deny[msg] {
-  resource := data.main.all_resources[_]
+  resource := all_resources[_]  # Changed from data.main.all_resources[_]
   resource.type == "Microsoft.OperationalInsights/workspaces"
   skus := allowed_skus[resource.type]
   sku := resource.properties.sku.name
@@ -35,7 +35,7 @@ deny[msg] {
 }
 
 deny[msg] {
-  resource := data.main.all_resources[_]
+  resource := all_resources[_]  # Changed from data.main.all_resources[_]
   resource.type == "Microsoft.Web/serverfarms"
   skus := allowed_skus[resource.type]
   sku := resource.sku.name

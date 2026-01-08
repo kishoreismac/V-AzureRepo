@@ -1,7 +1,7 @@
-package infra.disallow_public_blob_access
+package main
 
 deny[msg] {
-  resource := data.main.all_resources[_]
+  resource := all_resources[_]
   resource.type == "Microsoft.Storage/storageAccounts"
   properties := resource.properties
   properties.allowBlobPublicAccess == true
