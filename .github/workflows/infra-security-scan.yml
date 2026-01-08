@@ -80,26 +80,13 @@ jobs:
           # Use Microsoft policy for enterprise standards
           policy: 'microsoft'
 
-      # Upload results to GitHub Security tab
-      - name: Upload SARIF results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: ${{ steps.msdo.outputs.sarifFile }}
-
-      # Upload detailed results as artifact
-      - name: Upload scan results artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: msdo-security-results
-          path: ${{ steps.msdo.outputs.sarifFile }}
-          retention-days: 30
-
       # ========================================
-      # Optional: Parse Results for CI/CD Blocking
+      # Parse Results FIRST (but don't fail yet)
       # ========================================
-      - name: Check for Critical/High Severity Issues
+      - name: Analyze Security Scan Results
+        id: analyze
         if: always()
+        continue-on-error: true
         run: |
           echo "=== Analyzing Security Scan Results ==="
           
@@ -120,7 +107,45 @@ jobs:
           echo "  🔴 Critical/High: $CRITICAL_COUNT"
           echo "  🟡 Warnings: $WARNING_COUNT"
           
-          # List critical issues
+          # Store counts for later steps
+          echo "CRITICAL_COUNT=$CRITICAL_COUNT" >> $GITHUB_ENV
+          echo "WARNING_COUNT=$WARNING_COUNT" >> $GITHUB_ENV
+          
+          # List critical issues (but don't exit yet)
+          if [ "$CRITICAL_COUNT" -gt 0 ]; then
+            echo ""
+            echo "Critical/High Severity Issues Found:"
+            jq -r '.runs[].results[]? | select(.level == "error") | "  - \(.ruleId): \(.message.text)"' "${{ steps.msdo.outputs.sarifFile }}"
+          fi
+
+      # Upload results to GitHub Security tab (ALWAYS run this)
+      - name: Upload SARIF results to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ steps.msdo.outputs.sarifFile }}
+
+      # Upload detailed results as artifact (ALWAYS run this)
+      - name: Upload scan results artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: msdo-security-results
+          path: ${{ steps.msdo.outputs.sarifFile }}
+          retention-days: 30
+
+      # ========================================
+      # NOW Block Deployment if Critical Issues Found
+      # ========================================
+      - name: Block Deployment on Critical Issues
+        if: always()
+        run: |
+          CRITICAL_COUNT="${{ env.CRITICAL_COUNT }}"
+          
+          if [ -z "$CRITICAL_COUNT" ]; then
+            CRITICAL_COUNT=0
+          fi
+          
           if [ "$CRITICAL_COUNT" -gt 0 ]; then
             echo ""
             echo "Critical/High Severity Issues Found:"
