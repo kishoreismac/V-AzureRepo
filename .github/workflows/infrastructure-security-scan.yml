@@ -63,18 +63,18 @@ jobs:
         id: checkov
         run: |
           checkov -f main.json -o json > checkov-report.json || true
-          python - <<'PY'
-import json,sys
-r=json.load(open('checkov-report.json'))
-fails=r.get('results',{}).get('failed_checks',[])
-print("Checkov failed checks:", len(fails))
-for f in fails:
-    if f.get('severity','').upper() in ('HIGH','CRITICAL'):
-        print("Found HIGH/CRITICAL check:", f)
-        sys.exit(2)
-if len(fails)>0:
-    sys.exit(1)
-PY
+          python3 - <<'PY'
+          import json,sys
+          r=json.load(open('checkov-report.json'))
+          fails=r.get('results',{}).get('failed_checks',[])
+          print("Checkov failed checks:", len(fails))
+          for f in fails:
+              if f.get('severity','').upper() in ('HIGH','CRITICAL'):
+                  print("Found HIGH/CRITICAL check:", f)
+                  sys.exit(2)
+          if len(fails)>0:
+              sys.exit(1)
+          PY
 
       - name: Upload security scan report
         uses: actions/upload-artifact@v4
