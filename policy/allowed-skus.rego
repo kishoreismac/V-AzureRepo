@@ -4,8 +4,8 @@ package infra.allowed_skus
 # Add resource types as needed. Resources without SKU policies defined will trigger a policy failure.
 # This is intentional to ensure all resource types are explicitly reviewed and approved.
 allowed_skus = {
-  "Microsoft.Web/sites": ["Y1","P1V2","S1"],
-  "Microsoft.Storage/storageAccounts": ["Standard_LRS","Standard_GRS"]
+  "Microsoft.Web/sites": {"Y1": true, "P1V2": true, "S1": true},
+  "Microsoft.Storage/storageAccounts": {"Standard_LRS": true, "Standard_GRS": true}
 }
 
 # Deny resources that don't have a SKU policy defined
@@ -21,6 +21,6 @@ deny[msg] {
   resource := input.resources[_]
   skus := allowed_skus[resource.type]
   sku := resource.sku.name
-  not (sku in skus)
+  not skus[sku]
   msg := sprintf("Resource %s has disallowed SKU %s", [resource.name, sku])
 }

@@ -37,17 +37,54 @@ jobs:
           sudo mv /tmp/conftest /usr/local/bin/conftest
           conftest --version
 
+      # ADD THIS STEP - Build Bicep to JSON
+      - name: Build Bicep -> ARM JSON
+        id: build-bicep
+        run: |
+          echo "Building Bicep file to JSON..."
+          # Check if main.bicep exists
+          if [ ! -f main.bicep ]; then
+            echo "Error: main.bicep file not found!"
+            echo "Current directory: $(pwd)"
+            ls -la
+            exit 1
+          fi
+          
+          # Build Bicep to JSON
+          az bicep build --file main.bicep --outfile main.json
+          
+          # Check if build succeeded
+          if [ ! -f main.json ]; then
+            echo "Error: Failed to create main.json"
+            exit 1
+          fi
+          
+          echo "Bicep build completed successfully"
+          echo "main.json created with size: $(wc -l < main.json) lines"
+
       - name: Run conftest (OPA) policy checks
         run: |
+          echo "Current directory: $(pwd)"
+          echo "Files available:"
+          ls -la
+          
           if [ ! -d policy ]; then
             echo "No policy directory found"
             exit 0
           fi
+          
           echo "Policy files found:"
           ls -la policy/
           echo "Testing policy syntax..."
-          conftest verify --policy policy/ || echo "Policy verification failed"
+          conftest verify --policy policy/ || { echo "Policy verification failed"; exit 1; }
+          
           echo "Running policy checks..."
+          if [ ! -f main.json ]; then
+            echo "Error: main.json not found. Was Bicep build successful?"
+            exit 1
+          fi
+          
+          # Run conftest with policy checks
           conftest test main.json --policy policy --no-color
 
       - name: Upload conftest results (if present)
