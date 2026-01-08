@@ -109,6 +109,8 @@ echo ""
 echo "Configuring alerts for Function App..."
 
 # Create action group if it doesn't exist
+# NOTE: The email address should be updated in Azure Portal after deployment
+# This is a placeholder and should not be used in production
 ACTION_GROUP_NAME="ag-${ENVIRONMENT}-alerts"
 az monitor action-group create \
   --name "$ACTION_GROUP_NAME" \
