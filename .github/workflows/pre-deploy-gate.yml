@@ -1,0 +1,233 @@
+name: Pre-Deploy Gate
+
+on:
+  workflow_run:
+    workflows: ["Infrastructure Security Scan", "Infrastructure Compliance"]
+    types: [completed]
+    branches:
+      - main
+      - develop
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  validate-gate:
+    name: Validate Security and Compliance Gates
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Get Triggering Workflow Info
+        id: trigger-info
+        run: |
+          echo "workflow-name=${{ github.event.workflow_run.name }}" >> $GITHUB_OUTPUT
+          echo "workflow-status=${{ github.event.workflow_run.conclusion }}" >> $GITHUB_OUTPUT
+          echo "head-sha=${{ github.event.workflow_run.head_sha }}" >> $GITHUB_OUTPUT
+          echo "branch=${{ github.event.workflow_run.head_branch }}" >> $GITHUB_OUTPUT
+          
+          echo "Triggered by workflow: ${{ github.event.workflow_run.name }}"
+          echo "Status: ${{ github.event.workflow_run.conclusion }}"
+          echo "Head SHA: ${{ github.event.workflow_run.head_sha }}"
+          echo "Branch: ${{ github.event.workflow_run.head_branch }}"
+      
+      - name: Check Security Scan Status
+        id: check-security
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const headSha = '${{ steps.trigger-info.outputs.head-sha }}';
+            const branch = '${{ steps.trigger-info.outputs.branch }}';
+            
+            console.log(`Checking Security Scan for SHA: ${headSha}, Branch: ${branch}`);
+            
+            // Get workflow runs for Infrastructure Security Scan
+            const securityRuns = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'infrastructure-security-scan.yml',
+              head_sha: headSha,
+              branch: branch,
+              per_page: 10
+            });
+            
+            console.log(`Found ${securityRuns.data.workflow_runs.length} security scan runs`);
+            
+            // Find the most recent run for this SHA
+            const latestSecurityRun = securityRuns.data.workflow_runs
+              .filter(run => run.head_sha === headSha)
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+            
+            if (!latestSecurityRun) {
+              console.log('❌ No security scan found for this commit');
+              core.setOutput('status', 'not_found');
+              core.setOutput('run-id', '');
+              return;
+            }
+            
+            console.log(`Security Scan Status: ${latestSecurityRun.conclusion}`);
+            console.log(`Security Scan Run ID: ${latestSecurityRun.id}`);
+            
+            core.setOutput('status', latestSecurityRun.conclusion || 'pending');
+            core.setOutput('run-id', latestSecurityRun.id);
+            core.setOutput('html-url', latestSecurityRun.html_url);
+      
+      - name: Check Compliance Status
+        id: check-compliance
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const headSha = '${{ steps.trigger-info.outputs.head-sha }}';
+            const branch = '${{ steps.trigger-info.outputs.branch }}';
+            
+            console.log(`Checking Compliance for SHA: ${headSha}, Branch: ${branch}`);
+            
+            // Get workflow runs for Infrastructure Compliance
+            const complianceRuns = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'infrastructure-compliance.yml',
+              head_sha: headSha,
+              branch: branch,
+              per_page: 10
+            });
+            
+            console.log(`Found ${complianceRuns.data.workflow_runs.length} compliance runs`);
+            
+            // Find the most recent run for this SHA
+            const latestComplianceRun = complianceRuns.data.workflow_runs
+              .filter(run => run.head_sha === headSha)
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+            
+            if (!latestComplianceRun) {
+              console.log('❌ No compliance check found for this commit');
+              core.setOutput('status', 'not_found');
+              core.setOutput('run-id', '');
+              return;
+            }
+            
+            console.log(`Compliance Status: ${latestComplianceRun.conclusion}`);
+            console.log(`Compliance Run ID: ${latestComplianceRun.id}`);
+            
+            core.setOutput('status', latestComplianceRun.conclusion || 'pending');
+            core.setOutput('run-id', latestComplianceRun.id);
+            core.setOutput('html-url', latestComplianceRun.html_url);
+      
+      - name: Validate Gate Requirements
+        id: validate-gate
+        run: |
+          echo "=== Validating Pre-Deploy Gate Requirements ==="
+          echo ""
+          
+          SECURITY_STATUS="${{ steps.check-security.outputs.status }}"
+          COMPLIANCE_STATUS="${{ steps.check-compliance.outputs.status }}"
+          
+          echo "Security Scan Status: $SECURITY_STATUS"
+          echo "Compliance Check Status: $COMPLIANCE_STATUS"
+          echo ""
+          
+          # Initialize gate status
+          GATE_PASSED=true
+          
+          # Check Security Scan
+          if [ "$SECURITY_STATUS" != "success" ]; then
+            echo "❌ Security scan did not pass (status: $SECURITY_STATUS)"
+            if [ "$SECURITY_STATUS" == "not_found" ]; then
+              echo "   Security scan workflow not found for this commit"
+            fi
+            GATE_PASSED=false
+          else
+            echo "✅ Security scan passed"
+          fi
+          
+          # Check Compliance
+          if [ "$COMPLIANCE_STATUS" != "success" ]; then
+            echo "❌ Compliance check did not pass (status: $COMPLIANCE_STATUS)"
+            if [ "$COMPLIANCE_STATUS" == "not_found" ]; then
+              echo "   Compliance workflow not found for this commit"
+            fi
+            GATE_PASSED=false
+          else
+            echo "✅ Compliance check passed"
+          fi
+          
+          echo ""
+          
+          if [ "$GATE_PASSED" = true ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "🎉 Pre-deploy gate validation PASSED!"
+            echo "Both security and compliance checks have succeeded for commit ${{ steps.trigger-info.outputs.head-sha }}"
+          else
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "⛔ Pre-deploy gate validation FAILED!"
+            echo "One or more required checks did not pass"
+          fi
+      
+      - name: Generate Gate Summary
+        if: always()
+        run: |
+          echo "=== Pre-Deploy Gate Summary ===" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit SHA:** \`${{ steps.trigger-info.outputs.head-sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** \`${{ steps.trigger-info.outputs.branch }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status | Run |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|-----|" >> $GITHUB_STEP_SUMMARY
+          
+          # Security status
+          SECURITY_STATUS="${{ steps.check-security.outputs.status }}"
+          SECURITY_EMOJI="❓"
+          if [ "$SECURITY_STATUS" == "success" ]; then SECURITY_EMOJI="✅"; fi
+          if [ "$SECURITY_STATUS" == "failure" ]; then SECURITY_EMOJI="❌"; fi
+          if [ "$SECURITY_STATUS" == "not_found" ]; then SECURITY_EMOJI="⚠️"; fi
+          
+          SECURITY_URL="${{ steps.check-security.outputs.html-url }}"
+          if [ -n "$SECURITY_URL" ]; then
+            echo "| Security Scan | $SECURITY_EMOJI $SECURITY_STATUS | [View Run]($SECURITY_URL) |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Security Scan | $SECURITY_EMOJI $SECURITY_STATUS | N/A |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Compliance status
+          COMPLIANCE_STATUS="${{ steps.check-compliance.outputs.status }}"
+          COMPLIANCE_EMOJI="❓"
+          if [ "$COMPLIANCE_STATUS" == "success" ]; then COMPLIANCE_EMOJI="✅"; fi
+          if [ "$COMPLIANCE_STATUS" == "failure" ]; then COMPLIANCE_EMOJI="❌"; fi
+          if [ "$COMPLIANCE_STATUS" == "not_found" ]; then COMPLIANCE_EMOJI="⚠️"; fi
+          
+          COMPLIANCE_URL="${{ steps.check-compliance.outputs.html-url }}"
+          if [ -n "$COMPLIANCE_URL" ]; then
+            echo "| Compliance Check | $COMPLIANCE_EMOJI $COMPLIANCE_STATUS | [View Run]($COMPLIANCE_URL) |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Compliance Check | $COMPLIANCE_EMOJI $COMPLIANCE_STATUS | N/A |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          GATE_STATUS="${{ steps.validate-gate.outputs.status }}"
+          if [ "$GATE_STATUS" == "success" ]; then
+            echo "### ✅ Gate Status: PASSED" >> $GITHUB_STEP_SUMMARY
+            echo "Deployment can proceed." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ❌ Gate Status: FAILED" >> $GITHUB_STEP_SUMMARY
+            echo "Deployment is blocked until all checks pass." >> $GITHUB_STEP_SUMMARY
+          fi
+      
+      - name: Fail if Gate Requirements Not Met
+        if: steps.validate-gate.outputs.status != 'success'
+        run: |
+          echo "❌ Pre-deploy gate validation failed"
+          echo "Deployment cannot proceed until both security and compliance checks pass"
+          exit 1
+      
+      - name: Gate Passed
+        if: steps.validate-gate.outputs.status == 'success'
+        run: |
+          echo "✅ Pre-deploy gate passed successfully!"
+          echo "All security and compliance requirements met"
+          echo "Deployment workflows can now proceed"

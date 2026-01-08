@@ -107,3 +107,16 @@ jobs:
           fi
           
           echo "✅ Smoke tests passed!"
+      
+      - name: Configure Monitoring and Diagnostics
+        run: |
+          echo "=== Configuring Monitoring ==="
+          
+          chmod +x scripts/configure-monitoring.sh
+          
+          export DEPLOYMENT_NAME="${{ env.DEPLOYMENT_NAME }}"
+          export LOCATION="${{ env.LOCATION }}"
+          
+          ./scripts/configure-monitoring.sh
+          
+          echo "✅ Monitoring configuration complete"

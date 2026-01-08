@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*.*.*'  # Deploy on version tags
   workflow_dispatch:  # Manual trigger with inputs
+  workflow_run:
+    workflows: ["Pre-Deploy Gate"]
+    types: [completed]
+    branches:
+      - main
 
 permissions:
   id-token: write
@@ -13,6 +18,7 @@ permissions:
 env:
   ENVIRONMENT: prod
   LOCATION: eastus2  # Different region for prod
+  DEPLOYMENT_NAME: infra-prod-${{ github.run_id }}
 
 jobs:
   deploy:
@@ -102,3 +108,16 @@ jobs:
             
             sleep 10
           done
+      
+      - name: Configure Monitoring and Diagnostics
+        run: |
+          echo "=== Configuring Monitoring ==="
+          
+          chmod +x scripts/configure-monitoring.sh
+          
+          export DEPLOYMENT_NAME="infra-prod-${{ github.run_id }}"
+          export LOCATION="${{ env.LOCATION }}"
+          
+          ./scripts/configure-monitoring.sh
+          
+          echo "✅ Monitoring configuration complete"
