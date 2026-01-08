@@ -1,0 +1,49 @@
+name: Infrastructure Compliance (Policy-as-Code)
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  compliance:
+    name: Policy-as-Code (conftest / OPA)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install conftest and jq
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+          wget https://github.com/open-policy-agent/conftest/releases/download/v0.35.0/conftest_0.35.0_Linux_x86_64.tar.gz -O /tmp/conftest.tar.gz
+          tar -xzvf /tmp/conftest.tar.gz -C /tmp
+          sudo mv /tmp/conftest /usr/local/bin/conftest
+          conftest --version
+
+      - name: Build Bicep -> ARM JSON
+        run: |
+          az bicep build --file main.bicep --outfile main.json
+
+      - name: Run conftest (OPA) policy checks
+        run: |
+          if [ ! -d policy ]; then
+            echo "No policy directory found; add policy/*.rego to the policy/ directory to enable checks."
+            exit 0
+          fi
+          conftest test main.json --policy policy || { echo "Policy checks failed"; exit 1; }
+
+      - name: Upload conftest results (if present)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conftest-output
+          path: |
+            main.json
+            policy/
