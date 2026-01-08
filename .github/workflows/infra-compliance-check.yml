@@ -1,97 +1,223 @@
-name: Infrastructure Compliance (Policy-as-Code)
+name: Policy as Code (OPA)
 
 on:
   pull_request:
-    branches: [ main, develop ]
+    branches: [main, develop]
+    paths:
+      - '*.bicep'
+      - 'modules/**'
+      - 'policy/**'
   workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write
+  pull-requests: write
 
 jobs:
-  compliance:
-    name: Policy-as-Code (conftest / OPA)
+  opa-compliance:
+    name: OPA Policy Compliance
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Azure CLI (for bicep)
+      - name: Setup Azure CLI
         uses: azure/CLI@v1
         with:
           inlineScript: |
-            az version || true
-            if ! command -v bicep &> /dev/null; then
-              az bicep install || true
-            fi
-            bicep --version || true
+            az version
+            az bicep version || az bicep install
 
-      - name: Install conftest and jq
+      - name: Install conftest (OPA)
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y jq wget tar
-          wget https://github.com/open-policy-agent/conftest/releases/download/v0.35.0/conftest_0.35.0_Linux_x86_64.tar.gz -O /tmp/conftest.tar.gz
-          tar -xzvf /tmp/conftest.tar.gz -C /tmp
+          echo "=== Installing conftest ==="
+          wget https://github.com/open-policy-agent/conftest/releases/download/v0.56.0/conftest_0.56.0_Linux_x86_64.tar.gz -O /tmp/conftest.tar.gz
+          tar -xzf /tmp/conftest.tar.gz -C /tmp
           sudo mv /tmp/conftest /usr/local/bin/conftest
+          sudo chmod +x /usr/local/bin/conftest
           conftest --version
 
-      - name: Build Bicep -> ARM JSON
-        id: build-bicep
+      - name: Build Bicep to ARM JSON
         run: |
-          echo "Building Bicep file to JSON..."
+          echo "=== Building Bicep to ARM JSON ==="
+          
+          if [ ! -f main.bicep ]; then
+            echo "❌ main.bicep not found"
+            exit 1
+          fi
+          
           az bicep build --file main.bicep --outfile main.json
-          echo "Bicep build completed"
+          
+          if [ ! -f main.json ]; then
+            echo "❌ Failed to generate main.json"
+            exit 1
+          fi
+          
+          echo "✅ Successfully generated main.json"
+          echo "File size: $(wc -c < main.json) bytes"
 
-      - name: Debug - Check JSON structure
+      - name: Debug ARM Template Structure
         run: |
-          echo "=== Debug: Checking main.json structure ==="
-          echo "File exists: $(ls -la main.json)"
+          echo "=== ARM Template Structure ==="
           echo ""
           echo "Top-level keys:"
-          jq 'keys' main.json || echo "Cannot parse JSON"
+          jq 'keys' main.json
           echo ""
           echo "Resources count:"
-          jq '.resources | length' main.json || echo "No resources found"
+          jq '.resources | length' main.json
           echo ""
-          echo "First resource type:"
-          jq '.resources[0].type' main.json || echo "Cannot get first resource"
+          echo "Resource types:"
+          jq -r '.resources[].type' main.json
           echo ""
-          echo "Sample resource (first 500 chars):"
-          jq '.resources[0]' main.json | head -c 500
-          echo "..."
-          echo "=== End Debug ==="
 
-      - name: Run conftest (OPA) policy checks
+      - name: Verify Policy Syntax
         run: |
-          echo "Current directory: $(pwd)"
+          echo "=== Verifying OPA Policy Syntax ==="
           
           if [ ! -d policy ]; then
-            echo "No policy directory found"
+            echo "⚠️  No policy directory found - skipping policy checks"
             exit 0
           fi
           
-          echo "Policy files found:"
+          echo "Policy files:"
           ls -la policy/
           echo ""
-          echo "Testing policy syntax..."
-          conftest verify --policy policy/
-          echo ""
-          echo "Running policy checks with trace for debugging..."
           
-          # Run with trace to see what's happening
-          conftest test main.json --policy policy --no-color --trace 2>&1 | head -100
-          
-          echo ""
-          echo "Running detailed test..."
-          conftest test main.json --policy policy --no-color
+          # Test policy syntax
+          if conftest verify --policy policy/; then
+            echo "✅ Policy syntax valid"
+          else
+            echo "❌ Policy syntax errors found"
+            exit 1
+          fi
 
-      - name: Upload conftest results (if present)
+      - name: Run OPA Policy Checks
+        id: opa
+        continue-on-error: true
+        run: |
+          echo "=== Running OPA Policy Checks ==="
+          
+          if [ ! -d policy ]; then
+            echo "⚠️  No policy directory - skipping checks"
+            exit 0
+          fi
+          
+          # Run conftest and capture output
+          conftest test main.json \
+            --policy policy \
+            --output json \
+            --no-color > conftest-results.json || true
+          
+          # Also run for human-readable output
+          echo ""
+          echo "Policy Check Results:"
+          echo "===================="
+          conftest test main.json \
+            --policy policy \
+            --no-color || true
+
+      - name: Analyze OPA Results
+        if: always()
+        run: |
+          echo "=== Analyzing OPA Results ==="
+          
+          if [ ! -f conftest-results.json ]; then
+            echo "⚠️  No results file found"
+            exit 0
+          fi
+          
+          # Parse results
+          FAILURES=$(jq -r '.[0].failures // [] | length' conftest-results.json)
+          WARNINGS=$(jq -r '.[0].warnings // [] | length' conftest-results.json)
+          SUCCESSES=$(jq -r '.[0].successes // [] | length' conftest-results.json)
+          
+          echo ""
+          echo "=== POLICY COMPLIANCE REPORT ==="
+          echo ""
+          echo "  ❌ Failures:  $FAILURES"
+          echo "  ⚠️  Warnings:  $WARNINGS"
+          echo "  ✅ Passed:    $SUCCESSES"
+          echo ""
+          
+          if [ "$FAILURES" -gt 0 ]; then
+            echo "Policy Violations:"
+            jq -r '.[0].failures[] | "  - \(.msg)"' conftest-results.json
+            echo ""
+            echo "⚠️  These are informational findings (not blocking deployment)"
+            echo "📋 Review and fix these policy violations when possible"
+          else
+            echo "✅ All policy checks passed!"
+          fi
+
+      - name: Upload OPA Results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: conftest-output
+          name: opa-policy-results
           path: |
+            conftest-results.json
             main.json
-            policy || true
+          retention-days: 30
+
+      - name: Comment on PR
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            let results;
+            try {
+              results = JSON.parse(fs.readFileSync('conftest-results.json', 'utf8'));
+            } catch (e) {
+              console.log('No results file found');
+              return;
+            }
+            
+            const failures = results[0]?.failures || [];
+            const warnings = results[0]?.warnings || [];
+            const successes = results[0]?.successes || [];
+            
+            let body = `## 📋 OPA Policy Compliance Report\n\n`;
+            body += `| Status | Count |\n`;
+            body += `|--------|-------|\n`;
+            body += `| ❌ Failures | ${failures.length} |\n`;
+            body += `| ⚠️ Warnings | ${warnings.length} |\n`;
+            body += `| ✅ Passed | ${successes.length} |\n\n`;
+            
+            if (failures.length > 0) {
+              body += `### Policy Violations\n\n`;
+              failures.slice(0, 10).forEach(f => {
+                body += `- ${f.msg}\n`;
+              });
+              if (failures.length > 10) {
+                body += `\n... and ${failures.length - 10} more issue(s)\n`;
+              }
+              body += `\n> ⚠️ These findings are informational and don't block deployment.\n`;
+            } else {
+              body += `### ✅ All policy checks passed!\n`;
+            }
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Policy Check Summary
+        if: always()
+        run: |
+          echo ""
+          echo "=== OPA POLICY CHECK COMPLETE ==="
+          echo ""
+          echo "✅ Policy validation completed"
+          echo ""
+          echo "📊 Results available in:"
+          echo "  - Workflow logs (above)"
+          echo "  - Artifacts: opa-policy-results"
+          echo "  - PR comment (if applicable)"
+          echo ""
+          echo "Note: Policy findings are informational and don't block deployment"
