@@ -46,4 +46,4 @@ jobs:
           name: conftest-output
           path: |
             main.json
-            policy || true
+            policy/

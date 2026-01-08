@@ -116,6 +116,6 @@ jobs:
             FUNCTION_APP_NAME=$(echo "$OUTPUTS" | jq -r '.AZURE_FUNCTION_NAME.value // empty')
             STORAGE_NAME=$(echo "$OUTPUTS" | jq -r '.STORAGE_ACCOUNT_NAME.value // empty')
             RESOURCE_GROUP=$(echo "$OUTPUTS" | jq -r '.RESOURCE_GROUP_NAME.value // empty')
-            LAW_NAME="infra-prod-logs-${{ github.run_id }}"
+            LAW_NAME="infra-prod-logs"
             chmod +x ./scripts/configure-monitoring.sh
             ./scripts/configure-monitoring.sh --resource-group "$RESOURCE_GROUP" --function-app-name "$FUNCTION_APP_NAME" --storage-account "$STORAGE_NAME" --log-analytics-name "$LAW_NAME"

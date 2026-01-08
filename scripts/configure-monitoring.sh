@@ -72,6 +72,7 @@ if [ -n "$STORAGE" ]; then
 fi
 
 echo "Attempting to enable Defender for Cloud standard pricing for subscription (may require permission)."
+echo "Note: This enables 'default' pricing tier which has cost implications. Ensure this is approved for your subscription."
 SUB_ID=$(az account show --query id -o tsv)
 az security pricing create --name "default" --tier "Standard" --subscription "$SUB_ID" --only-show-errors || true
 
