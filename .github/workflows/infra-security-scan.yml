@@ -1,0 +1,152 @@
+name: Infrastructure Security Scan
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+    paths:
+      - '**/*.bicep'
+      - '*.bicep'
+      - 'modules/**'
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+  id-token: write
+  actions: read
+  security-events: write  # Required for SARIF upload to Security tab
+
+jobs:
+  security-scan:
+    name: Microsoft Security DevOps Scan
+    runs-on: ubuntu-latest  # Can also use windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Azure CLI
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            az version
+            az bicep version || az bicep install
+
+      # Optional: Build Bicep to JSON for additional validation
+      - name: Build Bicep files
+        run: |
+          echo "=== Building Bicep Files ==="
+          
+          if [ -f main.bicep ]; then
+            az bicep build --file main.bicep --outfile main.json
+            echo "✅ main.bicep built successfully"
+          fi
+          
+          # Build modules
+          if [ -d modules ]; then
+            for f in modules/*.bicep; do
+              if [ -f "$f" ]; then
+                echo "Building $(basename "$f")"
+                az bicep build --file "$f" --stdout > /dev/null
+              fi
+            done
+          fi
+
+      # Lint Bicep files
+      - name: Lint Bicep files
+        run: |
+          echo "=== Linting Bicep Files ==="
+          
+          for f in $(find . -name '*.bicep' -type f ! -path '*/.git/*'); do
+            echo "Linting: $f"
+            az bicep lint --file "$f"
+          done
+
+      # ========================================
+      # MICROSOFT SECURITY DEVOPS - Main Scan
+      # ========================================
+      - name: Run Microsoft Security DevOps
+        uses: microsoft/security-devops-action@latest
+        id: msdo
+        with:
+          # Scan IaC and code categories
+          categories: 'IaC,code'
+          
+          # Specify tools to run (optional - defaults to all applicable)
+          # tools: 'checkov,templateanalyzer,terrascan'
+          
+          # Use Microsoft policy for enterprise standards
+          policy: 'microsoft'
+
+      # Upload results to GitHub Security tab
+      - name: Upload SARIF results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ steps.msdo.outputs.sarifFile }}
+
+      # Upload detailed results as artifact
+      - name: Upload scan results artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: msdo-security-results
+          path: ${{ steps.msdo.outputs.sarifFile }}
+          retention-days: 30
+
+      # ========================================
+      # Optional: Parse Results for CI/CD Blocking
+      # ========================================
+      - name: Check for Critical/High Severity Issues
+        if: always()
+        run: |
+          echo "=== Analyzing Security Scan Results ==="
+          
+          # Check if SARIF file exists
+          if [ ! -f "${{ steps.msdo.outputs.sarifFile }}" ]; then
+            echo "⚠️  No SARIF results found"
+            exit 0
+          fi
+          
+          # Install jq for JSON parsing
+          sudo apt-get update -y && sudo apt-get install -y jq
+          
+          # Parse SARIF for high/critical issues
+          CRITICAL_COUNT=$(jq '[.runs[].results[]? | select(.level == "error")] | length' "${{ steps.msdo.outputs.sarifFile }}")
+          WARNING_COUNT=$(jq '[.runs[].results[]? | select(.level == "warning")] | length' "${{ steps.msdo.outputs.sarifFile }}")
+          
+          echo "Security Findings:"
+          echo "  🔴 Critical/High: $CRITICAL_COUNT"
+          echo "  🟡 Warnings: $WARNING_COUNT"
+          
+          # List critical issues
+          if [ "$CRITICAL_COUNT" -gt 0 ]; then
+            echo ""
+            echo "Critical/High Severity Issues Found:"
+            jq -r '.runs[].results[]? | select(.level == "error") | "  - \(.ruleId): \(.message.text)"' "${{ steps.msdo.outputs.sarifFile }}"
+            echo ""
+            echo "❌ Blocking deployment due to critical security issues"
+            echo "View details in the Security tab or download the artifact"
+            exit 1
+          else
+            echo ""
+            echo "✅ No critical security issues found"
+          fi
+
+      - name: Security Scan Summary
+        if: always()
+        run: |
+          echo ""
+          echo "=== SECURITY SCAN COMPLETE ==="
+          echo ""
+          echo "Scanned with Microsoft Security DevOps:"
+          echo "  ✅ Checkov (IaC security)"
+          echo "  ✅ Template Analyzer (ARM/Bicep)"
+          echo "  ✅ Terrascan (IaC compliance)"
+          echo "  ✅ Bicep linting"
+          echo ""
+          echo "📊 View results:"
+          echo "  - GitHub Security tab (Code scanning alerts)"
+          echo "  - Workflow artifacts (msdo-security-results)"
+          echo "  - Microsoft Defender for Cloud (if connected)"

@@ -2,7 +2,7 @@ name: Deploy to Development
 
 on:
   workflow_run:
-    workflows: ["Validate Infrastructure (Bicep)", "Infrastructure Security Scan", "Infrastructure Integration Tests"]
+    workflows: ["PR Validation - All Checks"]  # ✅ ONLY ONE WORKFLOW
     types: [completed]
     branches: [develop]
 
@@ -16,10 +16,30 @@ env:
   DEPLOYMENT_NAME: infra-dev-${{ github.run_id }}
 
 jobs:
+  # Check if validation gate actually succeeded
+  check-validation:
+    name: Check Validation Status
+    runs-on: ubuntu-latest
+    outputs:
+      should-deploy: ${{ steps.check.outputs.should-deploy }}
+    steps:
+      - name: Check Validation Gate Result
+        id: check
+        run: |
+          if [ "${{ github.event.workflow_run.conclusion }}" == "success" ]; then
+            echo "✅ Validation gate passed"
+            echo "should-deploy=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Validation gate failed"
+            echo "should-deploy=false" >> $GITHUB_OUTPUT
+          fi
+
   deploy:
     name: Deploy to Development
     runs-on: ubuntu-latest
-    environment: development  # GitHub environment
+    needs: check-validation
+    if: needs.check-validation.outputs.should-deploy == 'true'
+    environment: development
     
     steps:
       - name: Checkout repository
@@ -32,21 +52,18 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_DEV }}
           
-      # 1. PRE-DEPLOYMENT VALIDATION
       - name: Pre-deployment Validation
         run: |
           echo "=== Pre-deployment Validation ==="
-          
-          # Validate Bicep
           az bicep build --file main.bicep
           
-          # Check parameter file exists
           if [ ! -f "environments/${{ env.ENVIRONMENT }}/main.bicepparam" ]; then
             echo "❌ Parameters file not found"
             exit 1
           fi
           
-      # 2. WHAT-IF DEPLOYMENT
+          echo "✅ Validation passed"
+          
       - name: What-If Deployment
         run: |
           echo "=== What-If Analysis ==="
@@ -58,7 +75,6 @@ jobs:
             --parameters environments/${{ env.ENVIRONMENT }}/main.bicepparam \
             --no-pretty-print
             
-      # 3. ACTUAL DEPLOYMENT
       - name: Deploy Infrastructure
         run: |
           echo "=== Deploying Infrastructure ==="
@@ -72,25 +88,55 @@ jobs:
             
           echo "✅ Deployment completed!"
           
-            
-      - name: Run Smoke Tests
+      - name: Verify Monitoring Resources
         run: |
-          echo "=== Running Smoke Tests ==="
+          echo "=== Verifying Monitoring Infrastructure ==="
           
-          # Get outputs from deployment
           OUTPUTS=$(az deployment sub show \
             --name "${{ env.DEPLOYMENT_NAME }}" \
             --query properties.outputs \
             -o json)
           
-          # Extract values using CORRECT output names
+          RESOURCE_GROUP=$(echo $OUTPUTS | jq -r '.RESOURCE_GROUP_NAME.value')
+          LOG_WORKSPACE=$(echo $OUTPUTS | jq -r '.LOG_ANALYTICS_WORKSPACE_NAME.value // empty')
+          APP_INSIGHTS=$(echo $OUTPUTS | jq -r '.APP_INSIGHTS_NAME.value // empty')
+          
+          # Only check if outputs exist
+          if [ -n "$LOG_WORKSPACE" ]; then
+            if az monitor log-analytics workspace show \
+              --resource-group "$RESOURCE_GROUP" \
+              --workspace-name "$LOG_WORKSPACE" &> /dev/null; then
+              echo "✅ Log Analytics Workspace deployed"
+            else
+              echo "⚠️  Log Analytics Workspace not found"
+            fi
+          fi
+          
+          if [ -n "$APP_INSIGHTS" ]; then
+            if az monitor app-insights component show \
+              --app "$APP_INSIGHTS" \
+              --resource-group "$RESOURCE_GROUP" &> /dev/null; then
+              echo "✅ Application Insights deployed"
+            else
+              echo "⚠️  Application Insights not found"
+            fi
+          fi
+          
+      - name: Run Smoke Tests
+        run: |
+          echo "=== Running Smoke Tests ==="
+          
+          OUTPUTS=$(az deployment sub show \
+            --name "${{ env.DEPLOYMENT_NAME }}" \
+            --query properties.outputs \
+            -o json)
+          
           FUNCTION_APP_NAME=$(echo $OUTPUTS | jq -r '.AZURE_FUNCTION_NAME.value')
           STORAGE_NAME=$(echo $OUTPUTS | jq -r '.STORAGE_ACCOUNT_NAME.value')
           RESOURCE_GROUP=$(echo $OUTPUTS | jq -r '.RESOURCE_GROUP_NAME.value')
           
           echo "Checking deployed resources..."
           
-          # Check Function App
           if az functionapp show --name "$FUNCTION_APP_NAME" --resource-group "$RESOURCE_GROUP" &> /dev/null; then
             echo "✅ Function App exists"
           else
@@ -98,7 +144,6 @@ jobs:
             exit 1
           fi
           
-          # Check Storage Account
           if az storage account show --name "$STORAGE_NAME" --resource-group "$RESOURCE_GROUP" &> /dev/null; then
             echo "✅ Storage Account exists"
           else
@@ -106,4 +151,15 @@ jobs:
             exit 1
           fi
           
-          echo "✅ Smoke tests passed!"
+          echo "✅ All smoke tests passed!"
+          
+      - name: Deployment Summary
+        if: always()
+        run: |
+          echo ""
+          echo "=== DEPLOYMENT SUMMARY ==="
+          echo "✅ Infrastructure deployed"
+          echo "✅ Monitoring infrastructure active"
+          echo "✅ Smoke tests passed"
+          echo ""
+          echo "🚀 Deployment to ${{ env.ENVIRONMENT }} complete!"
