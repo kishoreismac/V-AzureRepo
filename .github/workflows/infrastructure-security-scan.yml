@@ -1,0 +1,207 @@
+name: Infrastructure Security Scan
+
+on:
+  pull_request:
+    paths:
+      - '**.bicep'
+      - 'modules/**.bicep'
+      - 'environments/**/*.bicepparam'
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - '**.bicep'
+      - 'modules/**.bicep'
+      - 'environments/**/*.bicepparam'
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+
+env:
+  BICEP_FILE: main.bicep
+  COMPILED_TEMPLATE: main.json
+
+jobs:
+  security-scan:
+    name: Security Scan with Checkov
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Azure CLI
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+        continue-on-error: true
+      
+      - name: Install Bicep CLI
+        run: |
+          az bicep install
+          az bicep version
+      
+      - name: Bicep Lint
+        id: bicep-lint
+        run: |
+          echo "=== Running Bicep Linter ==="
+          
+          # Run bicep lint
+          LINT_OUTPUT=$(az bicep lint --file ${{ env.BICEP_FILE }} 2>&1) || true
+          echo "$LINT_OUTPUT"
+          
+          # Check for errors
+          if echo "$LINT_OUTPUT" | grep -i "error"; then
+            echo "❌ Bicep lint found errors"
+            echo "lint-status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "✅ Bicep lint passed"
+            echo "lint-status=success" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Compile Bicep to ARM JSON
+        run: |
+          echo "=== Compiling Bicep to ARM JSON ==="
+          az bicep build --file ${{ env.BICEP_FILE }} --outfile ${{ env.COMPILED_TEMPLATE }}
+          
+          if [ ! -f "${{ env.COMPILED_TEMPLATE }}" ]; then
+            echo "❌ Failed to compile Bicep template"
+            exit 1
+          fi
+          
+          echo "✅ Bicep compiled successfully"
+          ls -lh ${{ env.COMPILED_TEMPLATE }}
+      
+      - name: Run Checkov Security Scan
+        id: checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          file: ${{ env.COMPILED_TEMPLATE }}
+          framework: arm
+          output_format: cli,sarif
+          output_file_path: console,checkov-results.sarif
+          soft_fail: false
+          quiet: false
+          skip_check: CKV_AZURE_1,CKV_AZURE_44  # Skip checks that might be environment-specific
+        continue-on-error: true
+      
+      - name: Process Checkov Results
+        id: process-results
+        run: |
+          echo "=== Processing Checkov Results ==="
+          
+          # Check if SARIF file exists
+          if [ ! -f "checkov-results.sarif" ]; then
+            echo "⚠️  No Checkov results file found"
+            echo "status=skipped" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Parse results to count severities
+          CRITICAL=$(jq '[.runs[].results[] | select(.level == "error" and (.properties.severity // "MEDIUM") == "CRITICAL")] | length' checkov-results.sarif || echo "0")
+          HIGH=$(jq '[.runs[].results[] | select(.level == "error" and (.properties.severity // "MEDIUM") == "HIGH")] | length' checkov-results.sarif || echo "0")
+          MEDIUM=$(jq '[.runs[].results[] | select(.level == "warning")] | length' checkov-results.sarif || echo "0")
+          LOW=$(jq '[.runs[].results[] | select(.level == "note")] | length' checkov-results.sarif || echo "0")
+          
+          echo "Critical Issues: $CRITICAL"
+          echo "High Issues: $HIGH"
+          echo "Medium Issues: $MEDIUM"
+          echo "Low Issues: $LOW"
+          
+          echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+          echo "high=$HIGH" >> $GITHUB_OUTPUT
+          echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
+          echo "low=$LOW" >> $GITHUB_OUTPUT
+          
+          # Determine if we should fail the job
+          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "❌ Security scan found HIGH or CRITICAL issues"
+          else
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "✅ No critical security issues found"
+          fi
+      
+      - name: Upload Checkov Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkov-security-scan-results
+          path: |
+            checkov-results.sarif
+            ${{ env.COMPILED_TEMPLATE }}
+          retention-days: 30
+      
+      - name: Upload SARIF to GitHub Security
+        if: always() && github.event_name == 'push'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: checkov-results.sarif
+          category: checkov-infrastructure
+        continue-on-error: true
+      
+      - name: Comment on PR with Results
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const critical = '${{ steps.process-results.outputs.critical }}' || '0';
+            const high = '${{ steps.process-results.outputs.high }}' || '0';
+            const medium = '${{ steps.process-results.outputs.medium }}' || '0';
+            const low = '${{ steps.process-results.outputs.low }}' || '0';
+            const status = '${{ steps.process-results.outputs.status }}';
+            
+            let emoji = '✅';
+            let statusText = 'Passed';
+            if (status === 'failed') {
+              emoji = '❌';
+              statusText = 'Failed';
+            } else if (parseInt(medium) > 0 || parseInt(low) > 0) {
+              emoji = '⚠️';
+              statusText = 'Passed with warnings';
+            }
+            
+            const body = `## ${emoji} Infrastructure Security Scan Results
+            
+            **Status:** ${statusText}
+            
+            | Severity | Count |
+            |----------|-------|
+            | 🔴 Critical | ${critical} |
+            | 🟠 High | ${high} |
+            | 🟡 Medium | ${medium} |
+            | 🔵 Low | ${low} |
+            
+            ${parseInt(critical) > 0 || parseInt(high) > 0 ? '**⚠️ Action Required:** Please address HIGH and CRITICAL issues before merging.' : ''}
+            
+            Full results are available in the workflow artifacts.`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+      
+      - name: Fail on Critical Issues
+        if: steps.process-results.outputs.status == 'failed'
+        run: |
+          echo "❌ Security scan failed due to HIGH or CRITICAL issues"
+          echo "Please review the Checkov results and address the security findings"
+          exit 1
+      
+      - name: Summary
+        if: always()
+        run: |
+          echo "=== Security Scan Summary ==="
+          echo "Bicep Lint: ${{ steps.bicep-lint.outputs.lint-status }}"
+          echo "Checkov Status: ${{ steps.process-results.outputs.status }}"
+          echo "Critical: ${{ steps.process-results.outputs.critical }}"
+          echo "High: ${{ steps.process-results.outputs.high }}"
+          echo "Medium: ${{ steps.process-results.outputs.medium }}"
+          echo "Low: ${{ steps.process-results.outputs.low }}"

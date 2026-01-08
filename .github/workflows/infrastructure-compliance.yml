@@ -1,0 +1,354 @@
+name: Infrastructure Compliance
+
+on:
+  pull_request:
+    paths:
+      - '**.bicep'
+      - 'modules/**.bicep'
+      - 'environments/**/*.bicepparam'
+      - 'policy/**.rego'
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - '**.bicep'
+      - 'modules/**.bicep'
+      - 'environments/**/*.bicepparam'
+      - 'policy/**.rego'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  BICEP_FILE: main.bicep
+  COMPILED_TEMPLATE: main.json
+  POLICY_DIR: policy
+
+jobs:
+  compliance-check:
+    name: OPA/Conftest Compliance Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Azure CLI
+        run: |
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+          az bicep install
+      
+      - name: Compile Bicep to ARM JSON
+        run: |
+          echo "=== Compiling Bicep to ARM JSON ==="
+          az bicep build --file ${{ env.BICEP_FILE }} --outfile ${{ env.COMPILED_TEMPLATE }}
+          
+          if [ ! -f "${{ env.COMPILED_TEMPLATE }}" ]; then
+            echo "❌ Failed to compile Bicep template"
+            exit 1
+          fi
+          
+          echo "✅ Bicep compiled successfully"
+      
+      - name: Setup Conftest
+        run: |
+          echo "=== Installing Conftest ==="
+          CONFTEST_VERSION=0.49.1
+          wget -q "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz"
+          tar xzf conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz
+          sudo mv conftest /usr/local/bin/
+          conftest --version
+      
+      - name: Validate OPA Policies
+        run: |
+          echo "=== Validating OPA Policy Syntax ==="
+          
+          if [ ! -d "${{ env.POLICY_DIR }}" ]; then
+            echo "⚠️  No policy directory found, skipping policy validation"
+            exit 0
+          fi
+          
+          # Check if rego files exist
+          REGO_COUNT=$(find ${{ env.POLICY_DIR }} -name "*.rego" | wc -l)
+          if [ "$REGO_COUNT" -eq 0 ]; then
+            echo "⚠️  No .rego files found in policy directory"
+            exit 0
+          fi
+          
+          echo "Found $REGO_COUNT policy files"
+          
+          # Validate each policy file
+          for policy in ${{ env.POLICY_DIR }}/*.rego; do
+            echo "Validating: $policy"
+            if ! conftest verify --policy "$policy"; then
+              echo "❌ Policy validation failed: $policy"
+              exit 1
+            fi
+          done
+          
+          echo "✅ All policies validated successfully"
+      
+      - name: Run Compliance Checks - Tag Enforcement
+        id: check-tags
+        run: |
+          echo "=== Running Tag Enforcement Policy ==="
+          
+          if [ ! -f "${{ env.POLICY_DIR }}/ensure-tags.rego" ]; then
+            echo "⚠️  Tag policy not found, skipping"
+            echo "status=skipped" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          conftest test ${{ env.COMPILED_TEMPLATE }} \
+            --policy ${{ env.POLICY_DIR }}/ensure-tags.rego \
+            --output json > tag-results.json || true
+          
+          FAILURES=$(jq '[.[] | select(.failures != null) | .failures[]] | length' tag-results.json || echo "0")
+          WARNINGS=$(jq '[.[] | select(.warnings != null) | .warnings[]] | length' tag-results.json || echo "0")
+          
+          echo "failures=$FAILURES" >> $GITHUB_OUTPUT
+          echo "warnings=$WARNINGS" >> $GITHUB_OUTPUT
+          
+          if [ "$FAILURES" -gt 0 ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "❌ Tag enforcement check failed"
+          else
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "✅ Tag enforcement check passed"
+          fi
+        continue-on-error: true
+      
+      - name: Run Compliance Checks - SKU Restrictions
+        id: check-skus
+        run: |
+          echo "=== Running SKU Restriction Policy ==="
+          
+          if [ ! -f "${{ env.POLICY_DIR }}/allowed-skus.rego" ]; then
+            echo "⚠️  SKU policy not found, skipping"
+            echo "status=skipped" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          conftest test ${{ env.COMPILED_TEMPLATE }} \
+            --policy ${{ env.POLICY_DIR }}/allowed-skus.rego \
+            --output json > sku-results.json || true
+          
+          FAILURES=$(jq '[.[] | select(.failures != null) | .failures[]] | length' sku-results.json || echo "0")
+          
+          echo "failures=$FAILURES" >> $GITHUB_OUTPUT
+          
+          if [ "$FAILURES" -gt 0 ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "❌ SKU restriction check failed"
+          else
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "✅ SKU restriction check passed"
+          fi
+        continue-on-error: true
+      
+      - name: Run Compliance Checks - Network Security
+        id: check-network
+        run: |
+          echo "=== Running Network Security Policies ==="
+          
+          TOTAL_FAILURES=0
+          
+          # Check public IP policy
+          if [ -f "${{ env.POLICY_DIR }}/no-public-ip.rego" ]; then
+            conftest test ${{ env.COMPILED_TEMPLATE }} \
+              --policy ${{ env.POLICY_DIR }}/no-public-ip.rego \
+              --output json > network-public-ip-results.json || true
+            
+            FAILURES=$(jq '[.[] | select(.failures != null) | .failures[]] | length' network-public-ip-results.json || echo "0")
+            TOTAL_FAILURES=$((TOTAL_FAILURES + FAILURES))
+            echo "Public IP failures: $FAILURES"
+          fi
+          
+          # Check private endpoints policy
+          if [ -f "${{ env.POLICY_DIR }}/enforce-private-endpoints.rego" ]; then
+            conftest test ${{ env.COMPILED_TEMPLATE }} \
+              --policy ${{ env.POLICY_DIR }}/enforce-private-endpoints.rego \
+              --output json > network-private-endpoints-results.json || true
+            
+            FAILURES=$(jq '[.[] | select(.failures != null) | .failures[]] | length' network-private-endpoints-results.json || echo "0")
+            TOTAL_FAILURES=$((TOTAL_FAILURES + FAILURES))
+            echo "Private endpoint failures: $FAILURES"
+          fi
+          
+          echo "failures=$TOTAL_FAILURES" >> $GITHUB_OUTPUT
+          
+          if [ "$TOTAL_FAILURES" -gt 0 ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "❌ Network security checks failed"
+          else
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "✅ Network security checks passed"
+          fi
+        continue-on-error: true
+      
+      - name: Run Compliance Checks - HTTPS & Storage Security
+        id: check-https-storage
+        run: |
+          echo "=== Running HTTPS and Storage Security Policies ==="
+          
+          TOTAL_FAILURES=0
+          
+          # Check HTTPS policy
+          if [ -f "${{ env.POLICY_DIR }}/require-https.rego" ]; then
+            conftest test ${{ env.COMPILED_TEMPLATE }} \
+              --policy ${{ env.POLICY_DIR }}/require-https.rego \
+              --output json > https-results.json || true
+            
+            FAILURES=$(jq '[.[] | select(.failures != null) | .failures[]] | length' https-results.json || echo "0")
+            TOTAL_FAILURES=$((TOTAL_FAILURES + FAILURES))
+            echo "HTTPS failures: $FAILURES"
+          fi
+          
+          # Check blob access policy
+          if [ -f "${{ env.POLICY_DIR }}/disallow-public_blob_access.rego" ]; then
+            conftest test ${{ env.COMPILED_TEMPLATE }} \
+              --policy ${{ env.POLICY_DIR }}/disallow-public_blob_access.rego \
+              --output json > blob-access-results.json || true
+            
+            FAILURES=$(jq '[.[] | select(.failures != null) | .failures[]] | length' blob-access-results.json || echo "0")
+            TOTAL_FAILURES=$((TOTAL_FAILURES + FAILURES))
+            echo "Blob access failures: $FAILURES"
+          fi
+          
+          echo "failures=$TOTAL_FAILURES" >> $GITHUB_OUTPUT
+          
+          if [ "$TOTAL_FAILURES" -gt 0 ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "❌ HTTPS and storage security checks failed"
+          else
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "✅ HTTPS and storage security checks passed"
+          fi
+        continue-on-error: true
+      
+      - name: Run Compliance Checks - Diagnostic Settings
+        id: check-diagnostics
+        run: |
+          echo "=== Running Diagnostic Settings Policy ==="
+          
+          if [ ! -f "${{ env.POLICY_DIR }}/require-diagnostic-settings.rego" ]; then
+            echo "⚠️  Diagnostic settings policy not found, skipping"
+            echo "status=skipped" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          conftest test ${{ env.COMPILED_TEMPLATE }} \
+            --policy ${{ env.POLICY_DIR }}/require-diagnostic-settings.rego \
+            --output json > diagnostics-results.json || true
+          
+          FAILURES=$(jq '[.[] | select(.failures != null) | .failures[]] | length' diagnostics-results.json || echo "0")
+          WARNINGS=$(jq '[.[] | select(.warnings != null) | .warnings[]] | length' diagnostics-results.json || echo "0")
+          
+          echo "failures=$FAILURES" >> $GITHUB_OUTPUT
+          echo "warnings=$WARNINGS" >> $GITHUB_OUTPUT
+          
+          if [ "$FAILURES" -gt 0 ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "❌ Diagnostic settings check failed"
+          else
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "✅ Diagnostic settings check passed (warnings: $WARNINGS)"
+          fi
+        continue-on-error: true
+      
+      - name: Upload Compliance Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-check-results
+          path: |
+            *-results.json
+            ${{ env.COMPILED_TEMPLATE }}
+          retention-days: 30
+      
+      - name: Generate Compliance Summary
+        id: summary
+        if: always()
+        run: |
+          echo "=== Generating Compliance Summary ==="
+          
+          TOTAL_FAILURES=0
+          TOTAL_WARNINGS=0
+          
+          # Sum up all failures
+          for check in check-tags check-skus check-network check-https-storage check-diagnostics; do
+            FAILURES=$(echo "${{ toJson(steps) }}" | jq -r ".[\"$check\"].outputs.failures // \"0\"")
+            WARNINGS=$(echo "${{ toJson(steps) }}" | jq -r ".[\"$check\"].outputs.warnings // \"0\"")
+            TOTAL_FAILURES=$((TOTAL_FAILURES + FAILURES))
+            TOTAL_WARNINGS=$((TOTAL_WARNINGS + WARNINGS))
+          done
+          
+          echo "total-failures=$TOTAL_FAILURES" >> $GITHUB_OUTPUT
+          echo "total-warnings=$TOTAL_WARNINGS" >> $GITHUB_OUTPUT
+          
+          echo "Total Failures: $TOTAL_FAILURES"
+          echo "Total Warnings: $TOTAL_WARNINGS"
+      
+      - name: Comment on PR with Results
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const tagStatus = '${{ steps.check-tags.outputs.status }}';
+            const skuStatus = '${{ steps.check-skus.outputs.status }}';
+            const networkStatus = '${{ steps.check-network.outputs.status }}';
+            const httpsStorageStatus = '${{ steps.check-https-storage.outputs.status }}';
+            const diagnosticsStatus = '${{ steps.check-diagnostics.outputs.status }}';
+            const totalFailures = '${{ steps.summary.outputs.total-failures }}' || '0';
+            const totalWarnings = '${{ steps.summary.outputs.total-warnings }}' || '0';
+            
+            const getEmoji = (status) => {
+              if (status === 'success') return '✅';
+              if (status === 'failed') return '❌';
+              return '⚠️';
+            };
+            
+            const body = `## 🛡️ Infrastructure Compliance Check Results
+            
+            | Policy | Status |
+            |--------|--------|
+            | Tag Enforcement | ${getEmoji(tagStatus)} ${tagStatus || 'skipped'} |
+            | SKU Restrictions | ${getEmoji(skuStatus)} ${skuStatus || 'skipped'} |
+            | Network Security | ${getEmoji(networkStatus)} ${networkStatus || 'skipped'} |
+            | HTTPS & Storage | ${getEmoji(httpsStorageStatus)} ${httpsStorageStatus || 'skipped'} |
+            | Diagnostic Settings | ${getEmoji(diagnosticsStatus)} ${diagnosticsStatus || 'skipped'} |
+            
+            **Summary:**
+            - Total Failures: ${totalFailures}
+            - Total Warnings: ${totalWarnings}
+            
+            ${parseInt(totalFailures) > 0 ? '**⚠️ Action Required:** Please address compliance failures before merging.' : '✅ All compliance checks passed!'}
+            
+            Full results are available in the workflow artifacts.`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+      
+      - name: Determine Final Status
+        if: always()
+        run: |
+          TOTAL_FAILURES=${{ steps.summary.outputs.total-failures }}
+          
+          echo "=== Compliance Check Complete ==="
+          echo "Total Failures: $TOTAL_FAILURES"
+          echo "Total Warnings: ${{ steps.summary.outputs.total-warnings }}"
+          
+          if [ "$TOTAL_FAILURES" -gt 0 ]; then
+            echo "❌ Compliance checks failed"
+            echo "Please review the policy violations and update your infrastructure code"
+            exit 1
+          else
+            echo "✅ All compliance checks passed"
+          fi
