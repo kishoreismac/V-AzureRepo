@@ -1,0 +1,50 @@
+name: Pre-Deploy Gate
+
+on:
+  workflow_run:
+    workflows: ["Infrastructure Security Scan", "Infrastructure Compliance (Policy-as-Code)"]
+    types: [completed]
+
+permissions:
+  contents: read
+  checks: read
+  actions: read
+
+jobs:
+  gate:
+    name: Gate - require security & compliance success on same HEAD SHA
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Debug event
+        run: |
+          echo "Event name: $GITHUB_EVENT_NAME"
+          echo "Event path: $GITHUB_EVENT_PATH"
+          jq -r . < "$GITHUB_EVENT_PATH" || true
+
+      - name: Validate both workflows succeeded for the same head SHA
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          echo "Checking runs for head SHA: $HEAD_SHA"
+
+          check_workflow() {
+            wf_name="$1"
+            echo "Checking workflow: $wf_name"
+            runs=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" "https://api.github.com/repos/$REPO/actions/runs?per_page=200")
+            ok=$(echo "$runs" | jq -r --arg wf "$wf_name" --arg sha "$HEAD_SHA" '.workflow_runs[] | select(.name==$wf and .head_sha==$sha) | .conclusion' | head -n1)
+            if [ "$ok" = "success" ]; then
+              echo "$wf passed for sha $sha"
+              return 0
+            else
+              echo "$wf did not pass for sha $sha (status: $ok)"
+              return 1
+            fi
+          }
+
+          check_workflow "Infrastructure Security Scan" || exit 1
+          check_workflow "Infrastructure Compliance (Policy-as-Code)" || exit 1
+
+          echo "Both security and compliance passed for $HEAD_SHA"
