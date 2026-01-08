@@ -37,36 +37,35 @@ jobs:
           sudo mv /tmp/conftest /usr/local/bin/conftest
           conftest --version
 
-      # ADD THIS STEP - Build Bicep to JSON
       - name: Build Bicep -> ARM JSON
         id: build-bicep
         run: |
           echo "Building Bicep file to JSON..."
-          # Check if main.bicep exists
-          if [ ! -f main.bicep ]; then
-            echo "Error: main.bicep file not found!"
-            echo "Current directory: $(pwd)"
-            ls -la
-            exit 1
-          fi
-          
-          # Build Bicep to JSON
           az bicep build --file main.bicep --outfile main.json
-          
-          # Check if build succeeded
-          if [ ! -f main.json ]; then
-            echo "Error: Failed to create main.json"
-            exit 1
-          fi
-          
-          echo "Bicep build completed successfully"
-          echo "main.json created with size: $(wc -l < main.json) lines"
+          echo "Bicep build completed"
+
+      - name: Debug - Check JSON structure
+        run: |
+          echo "=== Debug: Checking main.json structure ==="
+          echo "File exists: $(ls -la main.json)"
+          echo ""
+          echo "Top-level keys:"
+          jq 'keys' main.json || echo "Cannot parse JSON"
+          echo ""
+          echo "Resources count:"
+          jq '.resources | length' main.json || echo "No resources found"
+          echo ""
+          echo "First resource type:"
+          jq '.resources[0].type' main.json || echo "Cannot get first resource"
+          echo ""
+          echo "Sample resource (first 500 chars):"
+          jq '.resources[0]' main.json | head -c 500
+          echo "..."
+          echo "=== End Debug ==="
 
       - name: Run conftest (OPA) policy checks
         run: |
           echo "Current directory: $(pwd)"
-          echo "Files available:"
-          ls -la
           
           if [ ! -d policy ]; then
             echo "No policy directory found"
@@ -75,16 +74,17 @@ jobs:
           
           echo "Policy files found:"
           ls -la policy/
+          echo ""
           echo "Testing policy syntax..."
-          conftest verify --policy policy/ || { echo "Policy verification failed"; exit 1; }
+          conftest verify --policy policy/
+          echo ""
+          echo "Running policy checks with trace for debugging..."
           
-          echo "Running policy checks..."
-          if [ ! -f main.json ]; then
-            echo "Error: main.json not found. Was Bicep build successful?"
-            exit 1
-          fi
+          # Run with trace to see what's happening
+          conftest test main.json --policy policy --no-color --trace 2>&1 | head -100
           
-          # Run conftest with policy checks
+          echo ""
+          echo "Running detailed test..."
           conftest test main.json --policy policy --no-color
 
       - name: Upload conftest results (if present)
