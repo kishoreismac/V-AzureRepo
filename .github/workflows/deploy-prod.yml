@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*.*.*'  # Deploy on version tags
   workflow_dispatch:  # Manual trigger with inputs
+  workflow_run:
+    workflows: ["Pre-Deploy Gate"]
+    types: [completed]
 
 permissions:
   id-token: write
@@ -102,3 +105,15 @@ jobs:
             
             sleep 10
           done
+          
+      - name: Configure Monitoring & Security (Log Analytics + Diagnostics)
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            OUTPUTS=$(az deployment sub show --name "infra-prod-${{ github.run_id }}" --query properties.outputs -o json 2>/dev/null || echo '{}')
+            FUNCTION_APP_NAME=$(echo "$OUTPUTS" | jq -r '.AZURE_FUNCTION_NAME.value // empty')
+            STORAGE_NAME=$(echo "$OUTPUTS" | jq -r '.STORAGE_ACCOUNT_NAME.value // empty')
+            RESOURCE_GROUP=$(echo "$OUTPUTS" | jq -r '.RESOURCE_GROUP_NAME.value // empty')
+            LAW_NAME="infra-prod-logs-${{ github.run_id }}"
+            chmod +x ./scripts/configure-monitoring.sh
+            ./scripts/configure-monitoring.sh --resource-group "$RESOURCE_GROUP" --function-app-name "$FUNCTION_APP_NAME" --storage-account "$STORAGE_NAME" --log-analytics-name "$LAW_NAME"
