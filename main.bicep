@@ -220,5 +220,4 @@ output APPLICATIONINSIGHTS_CONNECTION_STRING string = applicationInsights.output
 output AZURE_FUNCTION_NAME string = functionApp.outputs.name
 output FUNCTION_IDENTITY_PRINCIPAL_ID string = functionApp.outputs.principalId
 output DEPLOYMENT_BLOB_CONTAINER_URI string = deploymentBlobContainerUri
-// Add to outputs in main.bicep
 
