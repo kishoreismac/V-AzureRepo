@@ -44,7 +44,7 @@ resource managedIdentityPolicy 'Microsoft.Authorization/policyAssignments@2023-0
     enforcementMode: 'Default'
     parameters: {
       effect: {
-        value: 'Audit'
+        value: 'AuditIfNotExists'
       }
     }
   }
