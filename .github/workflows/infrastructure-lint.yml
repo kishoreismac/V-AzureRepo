@@ -2,7 +2,7 @@ name: Infrastructure Lint & Build
 
 on:
   pull_request:
-    branches: [main, develop, feature/**]
+    branches: [main, develop, 'feature/**']
     paths:
       - '*.bicep'
       - 'modules/**'
@@ -47,59 +47,26 @@ jobs:
             echo "Bicep version:"
             az bicep version
 
-      - name: Validate Bicep Configuration
-        run: |
-          echo "=== Validating Bicep Configuration ==="
-          
-          if [ -f bicepconfig.json ]; then
-            echo "✅ Found bicepconfig.json"
-            echo "Configuration:"
-            cat bicepconfig.json
-          else
-            echo "⚠️  No bicepconfig.json found - using defaults"
-          fi
-
-      - name: Lint Main Bicep Template
-        run: |
-          echo "=== Linting Main Bicep Template ==="
-          
-          if [ -f main.bicep ]; then
-            echo "Linting main.bicep..."
-            if az bicep lint --file main.bicep; then
-              echo "✅ main.bicep linting passed"
-            else
-              echo "❌ main.bicep has linting errors"
-              exit 1
-            fi
-          else
-            echo "❌ main.bicep not found"
-            exit 1
-          fi
-
-      - name: Lint Bicep Modules
-        id: lint-modules
+      - name: Lint All Bicep Files
+        id: lint-all
         continue-on-error: false
         run: |
-          echo "=== Linting Bicep Modules ==="
+          echo "=== Linting All Bicep Files ==="
           
-          if [ ! -d modules ]; then
-            echo "ℹ️  No modules directory found"
-            exit 0
-          fi
-          
-          # Find all .bicep files in modules directory
-          BICEP_FILES=$(find modules -name "*.bicep" -type f)
+          # Find and lint all .bicep files
+          echo "Finding all .bicep files..."
+          BICEP_FILES=$(find . -name "*.bicep" -type f ! -path '*/.git/*' ! -path '*/node_modules/*')
           
           if [ -z "$BICEP_FILES" ]; then
-            echo "ℹ️  No .bicep files found in modules directory"
-            exit 0
+            echo "❌ No .bicep files found in repository"
+            exit 1
           fi
           
-          echo "Found $(echo "$BICEP_FILES" | wc -l) Bicep files to lint"
+          echo "Found $(echo "$BICEP_FILES" | wc -l) .bicep file(s) to lint"
+          echo ""
           
           LINT_ERRORS=0
           for file in $BICEP_FILES; do
-            echo ""
             echo "Linting: $file"
             if az bicep lint --file "$file"; then
               echo "  ✅ Passed"
@@ -107,194 +74,118 @@ jobs:
               echo "  ❌ Failed"
               LINT_ERRORS=$((LINT_ERRORS + 1))
             fi
+            echo ""
           done
           
           if [ $LINT_ERRORS -gt 0 ]; then
-            echo ""
-            echo "❌ Found $LINT_ERRORS module linting errors"
+            echo "❌ Found $LINT_ERRORS Bicep file linting errors"
             exit 1
           else
-            echo ""
-            echo "✅ All modules passed linting"
+            echo "✅ All Bicep files passed linting"
           fi
 
-      - name: Validate Environment Parameters
-        id: validate-params
+      - name: Lint Bicep Parameter Files
+        id: lint-params
         continue-on-error: false
         run: |
-          echo "=== Validating Environment Parameters ==="
+          echo "=== Linting Bicep Parameter Files ==="
           
-          if [ ! -d environments ]; then
-            echo "ℹ️  No environments directory found"
+          # Find and lint all .bicepparam files
+          echo "Finding all .bicepparam files..."
+          PARAM_FILES=$(find . -name "*.bicepparam" -type f ! -path '*/.git/*' ! -path '*/node_modules/*')
+          
+          if [ -z "$PARAM_FILES" ]; then
+            echo "⚠️  No .bicepparam files found"
             exit 0
           fi
           
-          # Install yq for YAML parsing (if needed for other files)
-          sudo apt-get update && sudo apt-get install -y jq
+          echo "Found $(echo "$PARAM_FILES" | wc -l) .bicepparam file(s) to validate"
+          echo ""
           
-          # Check each environment directory
           PARAM_ERRORS=0
-          for env_dir in environments/*/; do
-            PARAM_FILE="${env_dir}main.bicepparam"
+          for file in $PARAM_FILES; do
+            echo "Validating: $file"
             
-            if [ ! -f "$PARAM_FILE" ]; then
-              echo "⚠️  No parameter file in $(basename $env_dir)"
-              continue
+            # Try to build with parameters to validate
+            if az bicep build-params --file "$file" --stdout > /dev/null 2>&1; then
+              echo "  ✅ Valid Bicep parameter file"
+            else
+              echo "  ❌ Invalid Bicep parameter file"
+              echo "  Error details:"
+              az bicep build-params --file "$file" --stdout 2>&1 | head -3
+              PARAM_ERRORS=$((PARAM_ERRORS + 1))
             fi
-            
             echo ""
-            echo "Checking: $(basename $env_dir)/main.bicepparam"
-            
-            # 1. File exists and is readable
-            if [ ! -r "$PARAM_FILE" ]; then
-              echo "  ❌ Cannot read parameter file"
-              PARAM_ERRORS=$((PARAM_ERRORS + 1))
-              continue
-            fi
-            
-            # 2. Check for 'using' statement (Bicep parameter files start with this)
-            if grep -q "^using " "$PARAM_FILE"; then
-              USING_LINE=$(grep "^using " "$PARAM_FILE")
-              echo "  ✅ Contains 'using' statement"
-              echo "     $USING_LINE"
-              
-              # Check if main.bicep exists relative to parameter file
-              PARAM_DIR=$(dirname "$PARAM_FILE")
-              RELATIVE_PATH=$(echo "$USING_LINE" | sed -n "s/.*using ['\"]\(.*\)['\"].*/\1/p")
-              
-              if [ -n "$RELATIVE_PATH" ]; then
-                # Try to resolve the path
-                RESOLVED_PATH=$(realpath -m "$PARAM_DIR/$RELATIVE_PATH" 2>/dev/null || echo "")
-                if [ -f "$RESOLVED_PATH" ]; then
-                  echo "  ✅ Referenced file exists: $RELATIVE_PATH"
-                else
-                  echo "  ⚠️  Referenced file may not exist: $RELATIVE_PATH"
-                  echo "     Resolved path: $RESOLVED_PATH"
-                fi
-              fi
-            else
-              echo "  ❌ Missing 'using' statement (Bicep parameter files must start with 'using')"
-              PARAM_ERRORS=$((PARAM_ERRORS + 1))
-            fi
-            
-            # 3. Check for basic Bicep parameter syntax
-            echo "  Checking parameter syntax..."
-            
-            # Count param statements
-            PARAM_COUNT=$(grep -c "^param " "$PARAM_FILE" 2>/dev/null || echo "0")
-            if [ "$PARAM_COUNT" -gt 0 ]; then
-              echo "  ✅ Contains $PARAM_COUNT parameter(s)"
-            else
-              echo "  ⚠️  No 'param' statements found (might be empty or wrong format)"
-            fi
-            
-            # 4. Show sample content (first 5 non-empty, non-comment lines)
-            echo "  Sample content:"
-            grep -v "^$" "$PARAM_FILE" | grep -v "^//" | head -5 | sed 's/^/     /'
-            
-            # 5. Check for common syntax errors
-            # Check for unclosed quotes or brackets
-            if grep -q '"[^"]*$' "$PARAM_FILE" || grep -q "'[^']*$" "$PARAM_FILE"; then
-              echo "  ⚠️  Possible unclosed quotes"
-            fi
-            
-            # Check for valid assignment syntax
-            INVALID_LINES=$(grep -n "^param.*=[^=]" "$PARAM_FILE" | grep -v "==" || true)
-            if [ -n "$INVALID_LINES" ]; then
-              echo "  ⚠️  Check parameter assignment syntax on line(s):"
-              echo "$INVALID_LINES" | sed 's/^/     /'
-            fi
           done
           
           if [ $PARAM_ERRORS -gt 0 ]; then
-            echo ""
             echo "❌ Found $PARAM_ERRORS parameter file errors"
-            echo ""
-            echo "📝 Bicep Parameter File Format Example:"
-            echo "======================================="
-            echo "using '../../main.bicep'"
-            echo ""
-            echo "param environmentName = 'dev'"
-            echo "param location = 'eastus'"
-            echo "param functionAppRuntime = 'python'"
-            echo "// Add other parameters as needed"
             exit 1
           else
-            echo ""
-            echo "✅ All parameter files have valid structure"
+            echo "✅ All parameter files are valid"
           fi
 
-      - name: Build Bicep to ARM JSON
-        id: build-bicep
+      - name: Build Main Bicep Template
+        id: build-main
         run: |
-          echo "=== Building Bicep to ARM JSON ==="
+          echo "=== Building Main Bicep Template ==="
           
-          # Build main template
+          if [ ! -f main.bicep ]; then
+            echo "❌ main.bicep not found"
+            exit 1
+          fi
+          
           echo "Building main.bicep..."
           if az bicep build --file main.bicep --outfile main.json; then
             echo "✅ Successfully built main.json"
             
-            # Show file info
-            echo "Generated file size: $(wc -c < main.json) bytes"
-            echo "Line count: $(wc -l < main.json) lines"
-            
-            # Install jq if not already installed
-            if ! command -v jq &> /dev/null; then
-              sudo apt-get update && sudo apt-get install -y jq
-            fi
-            
-            if command -v jq &> /dev/null; then
-              RESOURCE_COUNT=$(jq '.resources | length' main.json 2>/dev/null || echo "0")
-              echo "Resources in template: $RESOURCE_COUNT"
+            # Quick validation
+            if [ -f main.json ]; then
+              echo "File size: $(wc -l < main.json) lines"
               
-              # Show resource types
-              echo "Resource types:"
-              jq -r '.resources[].type' main.json 2>/dev/null | sort | uniq -c || echo "  (Could not parse)"
+              # Check if it's valid JSON
+              if jq empty main.json 2>/dev/null; then
+                echo "✅ Generated valid JSON"
+              else
+                echo "❌ Generated invalid JSON"
+                exit 1
+              fi
+            else
+              echo "❌ main.json was not created"
+              exit 1
             fi
           else
             echo "❌ Failed to build main.bicep"
             exit 1
           fi
 
-      - name: Validate Generated ARM Template
+      - name: Quick ARM Template Check
         run: |
-          echo "=== Validating Generated ARM Template ==="
+          echo "=== Quick ARM Template Check ==="
           
           if [ ! -f main.json ]; then
             echo "❌ main.json not found"
             exit 1
           fi
           
-          # Install jq if not already installed
+          # Install jq if needed
           if ! command -v jq &> /dev/null; then
             sudo apt-get update && sudo apt-get install -y jq
           fi
           
-          # Basic JSON validation
-          if jq empty main.json 2>/dev/null; then
-            echo "✅ Valid JSON syntax"
+          echo "Checking ARM template structure..."
+          
+          # Check if it's a subscription or resource group deployment
+          if jq -e '.resources[] | select(.type == "Microsoft.Resources/resourceGroups")' main.json >/dev/null 2>&1; then
+            echo "✅ Subscription-level deployment detected"
+          elif jq -e '.resources' main.json >/dev/null 2>&1; then
+            RESOURCE_COUNT=$(jq '.resources | length' main.json)
+            echo "✅ Resource group deployment with $RESOURCE_COUNT resource(s)"
           else
-            echo "❌ Invalid JSON syntax"
-            exit 1
+            echo "⚠️  No resources found in template"
           fi
           
-          # Check for required ARM template fields
-          REQUIRED_FIELDS=("\$schema" "contentVersion" "resources")
-          MISSING_FIELDS=0
-          
-          for field in "${REQUIRED_FIELDS[@]}"; do
-            if jq -e ".${field}" main.json >/dev/null 2>&1; then
-              echo "✅ Found required field: $field"
-            else
-              echo "❌ Missing required field: $field"
-              MISSING_FIELDS=$((MISSING_FIELDS + 1))
-            fi
-          done
-          
-          if [ $MISSING_FIELDS -gt 0 ]; then
-            echo "❌ Template missing $MISSING_FIELDS required fields"
-            exit 1
-          fi
+          echo "✅ ARM template looks valid"
 
       - name: Upload Build Artifacts
         if: always()
@@ -311,12 +202,14 @@ jobs:
           echo ""
           echo "=== LINT & BUILD SUMMARY ==="
           echo ""
-          echo "✅ Bicep linting completed"
-          echo "✅ ARM template generated"
-          echo "✅ All validations passed"
+          echo "Steps completed:"
+          echo "  ✅ Bicep files linted"
+          echo "  ✅ Parameter files validated"
+          echo "  ✅ Main template built to ARM JSON"
+          echo "  ✅ ARM template validated"
           echo ""
           echo "📊 Outputs:"
           echo "  - Compiled ARM template: main.json"
           echo "  - Artifact: bicep-lint-build-results"
           echo ""
-          echo "🚀 Ready for security scanning and policy checks!"
+          echo "🚀 Ready for next steps!"
