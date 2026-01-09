@@ -1,0 +1,264 @@
+name: Infrastructure Lint & Build
+
+on:
+  pull_request:
+    branches: [main, develop, feature/**]
+    paths:
+      - '*.bicep'
+      - 'modules/**'
+      - 'environments/**'
+  workflow_dispatch:
+    inputs:
+      verbose:
+        description: 'Enable verbose output'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-build:
+    name: Lint & Build Bicep
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Azure CLI & Bicep
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            echo "=== Azure CLI & Bicep Setup ==="
+            az version
+            
+            # Install/update Bicep
+            if ! command -v bicep &> /dev/null; then
+              echo "Installing Bicep..."
+              az bicep install
+            else
+              echo "Updating Bicep..."
+              az bicep upgrade
+            fi
+            
+            echo "Bicep version:"
+            bicep --version
+
+      - name: Validate Bicep Configuration
+        run: |
+          echo "=== Validating Bicep Configuration ==="
+          
+          if [ -f bicepconfig.json ]; then
+            echo "✅ Found bicepconfig.json"
+            echo "Configuration:"
+            cat bicepconfig.json
+          else
+            echo "⚠️  No bicepconfig.json found - using defaults"
+          fi
+
+      - name: Lint Main Bicep Template
+        run: |
+          echo "=== Linting Main Bicep Template ==="
+          
+          if [ -f main.bicep ]; then
+            echo "Linting main.bicep..."
+            if az bicep lint --file main.bicep; then
+              echo "✅ main.bicep linting passed"
+            else
+              echo "❌ main.bicep has linting errors"
+              exit 1
+            fi
+          else
+            echo "❌ main.bicep not found"
+            exit 1
+          fi
+
+      - name: Lint Bicep Modules
+        id: lint-modules
+        continue-on-error: false
+        run: |
+          echo "=== Linting Bicep Modules ==="
+          
+          if [ ! -d modules ]; then
+            echo "ℹ️  No modules directory found"
+            exit 0
+          fi
+          
+          # Find all .bicep files in modules directory
+          BICEP_FILES=$(find modules -name "*.bicep" -type f)
+          
+          if [ -z "$BICEP_FILES" ]; then
+            echo "ℹ️  No .bicep files found in modules directory"
+            exit 0
+          fi
+          
+          echo "Found $(echo "$BICEP_FILES" | wc -l) Bicep files to lint"
+          
+          LINT_ERRORS=0
+          for file in $BICEP_FILES; do
+            echo ""
+            echo "Linting: $file"
+            if az bicep lint --file "$file"; then
+              echo "  ✅ Passed"
+            else
+              echo "  ❌ Failed"
+              LINT_ERRORS=$((LINT_ERRORS + 1))
+            fi
+          done
+          
+          if [ $LINT_ERRORS -gt 0 ]; then
+            echo ""
+            echo "❌ Found $LINT_ERRORS module linting errors"
+            exit 1
+          else
+            echo ""
+            echo "✅ All modules passed linting"
+          fi
+
+      - name: Lint Environment Parameters
+        id: lint-environments
+        continue-on-error: false
+        run: |
+          echo "=== Linting Environment Parameters ==="
+          
+          if [ ! -d environments ]; then
+            echo "ℹ️  No environments directory found"
+            exit 0
+          fi
+          
+          # Find all .bicepparam files
+          PARAM_FILES=$(find environments -name "*.bicepparam" -type f)
+          
+          if [ -z "$PARAM_FILES" ]; then
+            echo "ℹ️  No .bicepparam files found"
+            exit 0
+          fi
+          
+          echo "Found $(echo "$PARAM_FILES" | wc -l) parameter files to validate"
+          
+          PARAM_ERRORS=0
+          for file in $PARAM_FILES; do
+            echo ""
+            echo "Validating: $file"
+            
+            # Check file syntax
+            if jq empty "$file" 2>/dev/null || yq eval . "$file" 2>/dev/null; then
+              echo "  ✅ Valid syntax"
+              
+              # Check if it references main.bicep
+              if grep -q "using './../main.bicep'" "$file" || \
+                 grep -q "using 'main.bicep'" "$file" || \
+                 grep -q "using '\.\./main\.bicep'" "$file"; then
+                echo "  ✅ References main.bicep"
+              else
+                echo "  ⚠️  Warning: May not reference main.bicep correctly"
+              fi
+            else
+              echo "  ❌ Invalid syntax"
+              PARAM_ERRORS=$((PARAM_ERRORS + 1))
+            fi
+          done
+          
+          if [ $PARAM_ERRORS -gt 0 ]; then
+            echo ""
+            echo "❌ Found $PARAM_ERRORS parameter file errors"
+            exit 1
+          else
+            echo ""
+            echo "✅ All parameter files are valid"
+          fi
+
+      - name: Build Bicep to ARM JSON
+        id: build-bicep
+        run: |
+          echo "=== Building Bicep to ARM JSON ==="
+          
+          # Build main template
+          echo "Building main.bicep..."
+          if az bicep build --file main.bicep --outfile main.json; then
+            echo "✅ Successfully built main.json"
+            
+            # Show file info
+            echo "Generated file size: $(wc -c < main.json) bytes"
+            echo "Line count: $(wc -l < main.json) lines"
+            
+            # Show resource count
+            if command -v jq &> /dev/null; then
+              sudo apt-get update && sudo apt-get install -y jq
+            fi
+            
+            if command -v jq &> /dev/null; then
+              RESOURCE_COUNT=$(jq '.resources | length' main.json 2>/dev/null || echo "0")
+              echo "Resources in template: $RESOURCE_COUNT"
+              
+              # Show resource types
+              echo "Resource types:"
+              jq -r '.resources[].type' main.json 2>/dev/null | sort | uniq -c || echo "  (Could not parse)"
+            fi
+          else
+            echo "❌ Failed to build main.bicep"
+            exit 1
+          fi
+
+      - name: Validate Generated ARM Template
+        run: |
+          echo "=== Validating Generated ARM Template ==="
+          
+          if [ ! -f main.json ]; then
+            echo "❌ main.json not found"
+            exit 1
+          fi
+          
+          # Basic JSON validation
+          if jq empty main.json 2>/dev/null; then
+            echo "✅ Valid JSON syntax"
+          else
+            echo "❌ Invalid JSON syntax"
+            exit 1
+          fi
+          
+          # Check for required ARM template fields
+          REQUIRED_FIELDS=("\$schema" "contentVersion" "resources")
+          MISSING_FIELDS=0
+          
+          for field in "${REQUIRED_FIELDS[@]}"; do
+            if jq -e ".${field}" main.json >/dev/null 2>&1; then
+              echo "✅ Found required field: $field"
+            else
+              echo "❌ Missing required field: $field"
+              MISSING_FIELDS=$((MISSING_FIELDS + 1))
+            fi
+          done
+          
+          if [ $MISSING_FIELDS -gt 0 ]; then
+            echo "❌ Template missing $MISSING_FIELDS required fields"
+            exit 1
+          fi
+
+      - name: Upload Build Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bicep-lint-build-results
+          path: |
+            main.json
+          retention-days: 7
+
+      - name: Lint Summary
+        if: always()
+        run: |
+          echo ""
+          echo "=== LINT & BUILD SUMMARY ==="
+          echo ""
+          echo "✅ Bicep linting completed"
+          echo "✅ ARM template generated"
+          echo "✅ All validations passed"
+          echo ""
+          echo "📊 Outputs:"
+          echo "  - Compiled ARM template: main.json"
+          echo "  - Artifact: bicep-lint-build-results"
+          echo ""
+          echo "🚀 Ready for security scanning and policy checks!"

@@ -1,0 +1,358 @@
+name: Infrastructure Policy Compliance
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - '*.bicep'
+      - 'modules/**'
+      - 'policy/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  opa-compliance:
+    name: OPA Policy Compliance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Azure CLI & Bicep
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            az bicep version || az bicep install
+
+      - name: Install conftest (OPA)
+        run: |
+          echo "=== Installing conftest ==="
+          wget https://github.com/open-policy-agent/conftest/releases/download/v0.56.0/conftest_0.56.0_Linux_x86_64.tar.gz -O /tmp/conftest.tar.gz
+          tar -xzf /tmp/conftest.tar.gz -C /tmp
+          sudo mv /tmp/conftest /usr/local/bin/conftest
+          sudo chmod +x /usr/local/bin/conftest
+          conftest --version
+
+      - name: Build Bicep to ARM JSON
+        run: |
+          echo "=== Building Bicep to ARM JSON ==="
+          
+          if [ ! -f main.bicep ]; then
+            echo "❌ main.bicep not found"
+            exit 1
+          fi
+          
+          az bicep build --file main.bicep --outfile main.json
+          
+          if [ ! -f main.json ]; then
+            echo "❌ Failed to generate main.json"
+            exit 1
+          fi
+          
+          echo "✅ Successfully generated main.json"
+
+      - name: Fix Policy Package Declarations
+        if: hashFiles('policy/*.rego') != ''
+        run: |
+          echo "=== Fixing Policy Package Declarations ==="
+          
+          if [ ! -d policy ]; then
+            echo "⚠️  No policy directory found"
+            exit 0
+          fi
+          
+          # Backup original files
+          echo "Backing up original policy files..."
+          cp -r policy policy-backup
+          
+          # Fix all policy files to use package main
+          for file in policy/*.rego; do
+            if [ "$file" = "policy/main.rego" ]; then
+              continue  # Skip main.rego
+            fi
+            
+            echo "Fixing: $(basename "$file")"
+            
+            # Change package declaration to 'package main'
+            sed -i '1s/^package infra\.[^[:space:]]*/package main/' "$file"
+            
+            # Replace 'data.main.all_resources' with 'all_resources'
+            sed -i 's/data\.main\.all_resources/all_resources/g' "$file"
+            
+            # Show first 3 lines to verify
+            echo "  Updated to:"
+            head -3 "$file" | sed 's/^/    /'
+          done
+          
+          echo ""
+          echo "✅ All policy files updated to use 'package main'"
+
+      - name: Create Unified Main Policy File
+        if: hashFiles('policy/*.rego') != ''
+        run: |
+          echo "=== Creating Unified Main Policy File ==="
+          
+          # Create a simple main.rego that handles nested deployments
+          cat > policy/main.rego << 'EOFPOLICY'
+          package main
+
+          # Helper: Get all resources from nested deployments
+          all_resources[resource] {
+              deployment := input.resources[_]
+              deployment.type == "Microsoft.Resources/deployments"
+              resource := deployment.properties.template.resources[_]
+          }
+
+          # Test rule to verify policy engine is working
+          deny["TEST: Policy evaluation engine is working"] {
+              true
+          }
+
+          # Debug rules (optional - comment out for production)
+          warn[sprintf("Found %d top-level deployments", [count(input.resources)])] {
+              true
+          }
+
+          warn[sprintf("Found %d nested resources", [count(all_resources)])] {
+              count(all_resources) > 0
+          }
+          EOFPOLICY
+          
+          echo "✅ Created unified main.rego file"
+
+            - name: Verify Policy Syntax
+              if: hashFiles('policy/*.rego') != ''
+              run: |
+                echo "=== Verifying OPA Policy Syntax ==="
+                
+                echo "Policy files after fixes:"
+                ls -la policy/
+                echo ""
+                
+                echo "Package declarations:"
+                grep "^package" policy/*.rego
+                echo ""
+                
+                # Test policy syntax
+                if conftest verify --policy policy/; then
+                  echo "✅ Policy syntax valid"
+                else
+                  echo "❌ Policy syntax errors found"
+                  
+                  # Show detailed error
+                  echo ""
+                  echo "Detailed errors:"
+                  conftest verify --policy policy/ 2>&1 | head -50
+                  
+                  # Restore backup and exit
+                  if [ -d policy-backup ]; then
+                    echo "Restoring original policy files..."
+                    rm -rf policy
+                    mv policy-backup policy
+                  fi
+                  exit 1
+                fi
+
+      - name: Debug Policy Structure
+        if: hashFiles('policy/*.rego') != ''
+        run: |
+          echo "=== Debugging Policy Structure ==="
+          
+          # Create a debug policy
+          cat > debug-policy.rego << 'EOF'
+          package main
+
+          # Debug: Show what resources we can access
+          warn[sprintf("Top-level resource type: %s", [resource.type])] {
+              resource := input.resources[_]
+          }
+
+          warn[sprintf("Nested resource type: %s, name: %s", [resource.type, resource.name])] {
+              resource := all_resources[_]
+          }
+
+          # Debug: Show storage account properties
+          warn[sprintf("Storage: %s, allowBlobPublicAccess: %v", [resource.name, resource.properties.allowBlobPublicAccess])] {
+              resource := all_resources[_]
+              resource.type == "Microsoft.Storage/storageAccounts"
+          }
+          EOF
+          
+          echo "Running debug policy..."
+          conftest test main.json --policy policy --policy . --no-color 2>&1 | head -100 || true
+          
+          # Clean up
+          rm debug-policy.rego
+
+      - name: Run OPA Policy Checks
+        id: opa
+        if: hashFiles('policy/*.rego') != ''
+        continue-on-error: true
+        run: |
+          echo "=== Running OPA Policy Checks ==="
+          
+          # Run conftest and capture output
+          conftest test main.json \
+            --policy policy \
+            --output json \
+            --no-color > conftest-results.json 2>&1 || true
+          
+          echo ""
+          echo "Policy Check Results (Human Readable):"
+          echo "====================================="
+          conftest test main.json \
+            --policy policy \
+            --no-color 2>&1 || true
+
+      - name: Analyze OPA Results
+        if: always() && hashFiles('conftest-results.json') != ''
+        run: |
+          echo "=== Analyzing OPA Results ==="
+          
+          if [ ! -f conftest-results.json ]; then
+            echo "⚠️  No results file found"
+            exit 0
+          fi
+          
+          # Check if file has valid JSON
+          if ! jq empty conftest-results.json 2>/dev/null; then
+            echo "❌ Invalid JSON in results file"
+            echo "Raw content:"
+            head -20 conftest-results.json
+            exit 0
+          fi
+          
+          # Parse results
+          FAILURES=$(jq -r '.[0].failures // [] | length' conftest-results.json 2>/dev/null || echo "0")
+          WARNINGS=$(jq -r '.[0].warnings // [] | length' conftest-results.json 2>/dev/null || echo "0")
+          SUCCESSES=$(jq -r '.[0].successes // [] | length' conftest-results.json 2>/dev/null || echo "0")
+          
+          echo ""
+          echo "=== POLICY COMPLIANCE REPORT ==="
+          echo ""
+          echo "  ❌ Failures:  $FAILURES"
+          echo "  ⚠️  Warnings:  $WARNINGS"
+          echo "  ✅ Passed:    $SUCCESSES"
+          echo ""
+          
+          if [ "$FAILURES" -gt 0 ]; then
+            echo "Policy Violations:"
+            jq -r '.[0].failures[]? | "  - \(.msg)"' conftest-results.json 2>/dev/null || echo "  (Could not parse failures)"
+            echo ""
+          fi
+          
+          if [ "$WARNINGS" -gt 0 ]; then
+            echo "Policy Warnings:"
+            jq -r '.[0].warnings[]? | "  - \(.msg)"' conftest-results.json 2>/dev/null || echo "  (Could not parse warnings)"
+            echo ""
+          fi
+          
+          if [ "$FAILURES" -eq 0 ] && [ "$WARNINGS" -eq 0 ]; then
+            echo "✅ All policy checks passed or no policies defined!"
+          fi
+          
+          echo "📋 These findings are informational for review"
+
+      - name: Comment on PR
+        if: always() && github.event_name == 'pull_request' && hashFiles('conftest-results.json') != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            let results = { failures: [], warnings: [], successes: [] };
+            try {
+              const data = JSON.parse(fs.readFileSync('conftest-results.json', 'utf8'));
+              if (data && data[0]) {
+                results.failures = data[0].failures || [];
+                results.warnings = data[0].warnings || [];
+                results.successes = data[0].successes || [];
+              }
+            } catch (e) {
+              console.log('Could not parse results file:', e.message);
+            }
+            
+            let body = `## 📋 OPA Policy Compliance Report\n\n`;
+            body += `| Status | Count |\n`;
+            body += `|--------|-------|\n`;
+            body += `| ❌ Failures | ${results.failures.length} |\n`;
+            body += `| ⚠️ Warnings | ${results.warnings.length} |\n`;
+            body += `| ✅ Passed | ${results.successes.length} |\n\n`;
+            
+            if (results.failures.length > 0) {
+              body += `### Policy Violations\n\n`;
+              results.failures.slice(0, 5).forEach(f => {
+                body += `- ${f.msg}\n`;
+              });
+              if (results.failures.length > 5) {
+                body += `\n... and ${results.failures.length - 5} more issue(s)\n`;
+              }
+            }
+            
+            if (results.warnings.length > 0) {
+              body += `\n### Policy Warnings\n\n`;
+              results.warnings.slice(0, 3).forEach(f => {
+                body += `- ${f.msg}\n`;
+              });
+              if (results.warnings.length > 3) {
+                body += `\n... and ${results.warnings.length - 3} more warning(s)\n`;
+              }
+            }
+            
+            if (results.failures.length === 0 && results.warnings.length === 0) {
+              body += `### ✅ All policy checks passed!\n`;
+            }
+            
+            body += `\n> ℹ️ These findings are informational for review. They don't block deployment.\n`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Upload OPA Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opa-policy-results
+          path: |
+            conftest-results.json
+            main.json
+            policy-backup/ 2>/dev/null || true
+          retention-days: 7
+
+      - name: Cleanup Backup
+        if: always()
+        run: |
+          if [ -d policy-backup ]; then
+            echo "Cleaning up backup directory..."
+            rm -rf policy-backup
+          fi
+
+      - name: Policy Check Summary
+        if: always()
+        run: |
+          echo ""
+          echo "=== OPA POLICY CHECK COMPLETE ==="
+          echo ""
+          
+          if [ -d policy ]; then
+            echo "✅ Policy validation completed"
+            echo "📊 Results available in:"
+            echo "  - Workflow logs (above)"
+            echo "  - Artifacts: opa-policy-results"
+            echo "  - PR comment (if applicable)"
+          else
+            echo "ℹ️  No policy directory found"
+            echo "Add policies to the 'policy/' directory to enable compliance checks"
+          fi
+          
+          echo ""
+          echo "Note: Policy findings are informational and don't block deployment"

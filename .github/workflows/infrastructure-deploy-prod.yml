@@ -55,7 +55,7 @@ jobs:
           az deployment sub validate \
             --location "${{ env.LOCATION }}" \
             --template-file main.bicep \
-            --parameters @environments/${{ env.ENVIRONMENT }}/main.bicepparam
+            --parameters environments/${{ env.ENVIRONMENT }}/main.bicepparam
             
       # 3. MANUAL APPROVAL (via GitHub Environments)
       - name: Wait for Approval
@@ -74,7 +74,7 @@ jobs:
             --name "infra-prod-${{ github.run_id }}" \
             --location "${{ env.LOCATION }}" \
             --template-file main.bicep \
-            --parameters @environments/${{ env.ENVIRONMENT }}/main.bicepparam \
+            --parameters environments/${{ env.ENVIRONMENT }}/main.bicepparam \
             --no-wait
             
           # Monitor deployment
