@@ -118,57 +118,110 @@ jobs:
             echo "✅ All modules passed linting"
           fi
 
-      - name: Lint Environment Parameters
-        id: lint-environments
+      - name: Validate Environment Parameters
+        id: validate-params
         continue-on-error: false
         run: |
-          echo "=== Linting Environment Parameters ==="
+          echo "=== Validating Environment Parameters ==="
           
           if [ ! -d environments ]; then
             echo "ℹ️  No environments directory found"
             exit 0
           fi
           
-          # Find all .bicepparam files
-          PARAM_FILES=$(find environments -name "*.bicepparam" -type f)
+          # Install yq for YAML parsing (if needed for other files)
+          sudo apt-get update && sudo apt-get install -y jq
           
-          if [ -z "$PARAM_FILES" ]; then
-            echo "ℹ️  No .bicepparam files found"
-            exit 0
-          fi
-          
-          echo "Found $(echo "$PARAM_FILES" | wc -l) parameter files to validate"
-          
+          # Check each environment directory
           PARAM_ERRORS=0
-          for file in $PARAM_FILES; do
-            echo ""
-            echo "Validating: $file"
+          for env_dir in environments/*/; do
+            PARAM_FILE="${env_dir}main.bicepparam"
             
-            # Check file syntax
-            if jq empty "$file" 2>/dev/null || yq eval . "$file" 2>/dev/null; then
-              echo "  ✅ Valid syntax"
+            if [ ! -f "$PARAM_FILE" ]; then
+              echo "⚠️  No parameter file in $(basename $env_dir)"
+              continue
+            fi
+            
+            echo ""
+            echo "Checking: $(basename $env_dir)/main.bicepparam"
+            
+            # 1. File exists and is readable
+            if [ ! -r "$PARAM_FILE" ]; then
+              echo "  ❌ Cannot read parameter file"
+              PARAM_ERRORS=$((PARAM_ERRORS + 1))
+              continue
+            fi
+            
+            # 2. Check for 'using' statement (Bicep parameter files start with this)
+            if grep -q "^using " "$PARAM_FILE"; then
+              USING_LINE=$(grep "^using " "$PARAM_FILE")
+              echo "  ✅ Contains 'using' statement"
+              echo "     $USING_LINE"
               
-              # Check if it references main.bicep
-              if grep -q "using '../../main.bicep'" "$file" || \
-                 grep -q "using 'main.bicep'" "$file" || \
-                 grep -q "using '\.\./main\.bicep'" "$file"; then
-                echo "  ✅ References main.bicep"
-              else
-                echo "  ⚠️  Warning: May not reference main.bicep correctly"
+              # Check if main.bicep exists relative to parameter file
+              PARAM_DIR=$(dirname "$PARAM_FILE")
+              RELATIVE_PATH=$(echo "$USING_LINE" | sed -n "s/.*using ['\"]\(.*\)['\"].*/\1/p")
+              
+              if [ -n "$RELATIVE_PATH" ]; then
+                # Try to resolve the path
+                RESOLVED_PATH=$(realpath -m "$PARAM_DIR/$RELATIVE_PATH" 2>/dev/null || echo "")
+                if [ -f "$RESOLVED_PATH" ]; then
+                  echo "  ✅ Referenced file exists: $RELATIVE_PATH"
+                else
+                  echo "  ⚠️  Referenced file may not exist: $RELATIVE_PATH"
+                  echo "     Resolved path: $RESOLVED_PATH"
+                fi
               fi
             else
-              echo "  ❌ Invalid syntax"
+              echo "  ❌ Missing 'using' statement (Bicep parameter files must start with 'using')"
               PARAM_ERRORS=$((PARAM_ERRORS + 1))
+            fi
+            
+            # 3. Check for basic Bicep parameter syntax
+            echo "  Checking parameter syntax..."
+            
+            # Count param statements
+            PARAM_COUNT=$(grep -c "^param " "$PARAM_FILE" 2>/dev/null || echo "0")
+            if [ "$PARAM_COUNT" -gt 0 ]; then
+              echo "  ✅ Contains $PARAM_COUNT parameter(s)"
+            else
+              echo "  ⚠️  No 'param' statements found (might be empty or wrong format)"
+            fi
+            
+            # 4. Show sample content (first 5 non-empty, non-comment lines)
+            echo "  Sample content:"
+            grep -v "^$" "$PARAM_FILE" | grep -v "^//" | head -5 | sed 's/^/     /'
+            
+            # 5. Check for common syntax errors
+            # Check for unclosed quotes or brackets
+            if grep -q '"[^"]*$' "$PARAM_FILE" || grep -q "'[^']*$" "$PARAM_FILE"; then
+              echo "  ⚠️  Possible unclosed quotes"
+            fi
+            
+            # Check for valid assignment syntax
+            INVALID_LINES=$(grep -n "^param.*=[^=]" "$PARAM_FILE" | grep -v "==" || true)
+            if [ -n "$INVALID_LINES" ]; then
+              echo "  ⚠️  Check parameter assignment syntax on line(s):"
+              echo "$INVALID_LINES" | sed 's/^/     /'
             fi
           done
           
           if [ $PARAM_ERRORS -gt 0 ]; then
             echo ""
             echo "❌ Found $PARAM_ERRORS parameter file errors"
+            echo ""
+            echo "📝 Bicep Parameter File Format Example:"
+            echo "======================================="
+            echo "using '../../main.bicep'"
+            echo ""
+            echo "param environmentName = 'dev'"
+            echo "param location = 'eastus'"
+            echo "param functionAppRuntime = 'python'"
+            echo "// Add other parameters as needed"
             exit 1
           else
             echo ""
-            echo "✅ All parameter files are valid"
+            echo "✅ All parameter files have valid structure"
           fi
 
       - name: Build Bicep to ARM JSON
@@ -185,8 +238,8 @@ jobs:
             echo "Generated file size: $(wc -c < main.json) bytes"
             echo "Line count: $(wc -l < main.json) lines"
             
-            # Show resource count
-            if command -v jq &> /dev/null; then
+            # Install jq if not already installed
+            if ! command -v jq &> /dev/null; then
               sudo apt-get update && sudo apt-get install -y jq
             fi
             
@@ -210,6 +263,11 @@ jobs:
           if [ ! -f main.json ]; then
             echo "❌ main.json not found"
             exit 1
+          fi
+          
+          # Install jq if not already installed
+          if ! command -v jq &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y jq
           fi
           
           # Basic JSON validation
