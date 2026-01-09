@@ -149,7 +149,7 @@ jobs:
               echo "  ✅ Valid syntax"
               
               # Check if it references main.bicep
-              if grep -q "using './../main.bicep'" "$file" || \
+              if grep -q "using '../../main.bicep'" "$file" || \
                  grep -q "using 'main.bicep'" "$file" || \
                  grep -q "using '\.\./main\.bicep'" "$file"; then
                 echo "  ✅ References main.bicep"
