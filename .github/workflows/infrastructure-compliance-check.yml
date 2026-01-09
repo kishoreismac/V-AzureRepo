@@ -56,75 +56,7 @@ jobs:
           
           echo "✅ Successfully generated main.json"
 
-      - name: Fix Policy Package Declarations
-        if: hashFiles('policy/*.rego') != ''
-        run: |
-          echo "=== Fixing Policy Package Declarations ==="
-          
-          if [ ! -d policy ]; then
-            echo "⚠️  No policy directory found"
-            exit 0
-          fi
-          
-          # Backup original files
-          echo "Backing up original policy files..."
-          cp -r policy policy-backup
-          
-          # Fix all policy files to use package main
-          for file in policy/*.rego; do
-            if [ "$file" = "policy/main.rego" ]; then
-              continue  # Skip main.rego
-            fi
-            
-            echo "Fixing: $(basename "$file")"
-            
-            # Change package declaration to 'package main'
-            sed -i '1s/^package infra\.[^[:space:]]*/package main/' "$file"
-            
-            # Replace 'data.main.all_resources' with 'all_resources'
-            sed -i 's/data\.main\.all_resources/all_resources/g' "$file"
-            
-            # Show first 3 lines to verify
-            echo "  Updated to:"
-            head -3 "$file" | sed 's/^/    /'
-          done
-          
-          echo ""
-          echo "✅ All policy files updated to use 'package main'"
-
-      - name: Create Unified Main Policy File
-        if: hashFiles('policy/*.rego') != ''
-        run: |
-          echo "=== Creating Unified Main Policy File ==="
-          
-          # Create a simple main.rego that handles nested deployments
-          cat > policy/main.rego << 'EOF'
-          package main
-
-          # Helper: Get all resources from nested deployments
-          all_resources[resource] {
-              deployment := input.resources[_]
-              deployment.type == "Microsoft.Resources/deployments"
-              resource := deployment.properties.template.resources[_]
-          }
-
-          # Test rule to verify policy engine is working
-          deny["TEST: Policy evaluation engine is working"] {
-              true
-          }
-
-          # Debug rules (optional - comment out for production)
-          warn[sprintf("Found %d top-level deployments", [count(input.resources)])] {
-              true
-          }
-
-          warn[sprintf("Found %d nested resources", [count(all_resources)])] {
-              count(all_resources) > 0
-          }
-          EOFPOLICY
-          
-          echo "✅ Created unified main.rego file"
-
+      
       - name: Verify Policy Syntax
         if: hashFiles('policy/*.rego') != ''
         run: |
@@ -157,37 +89,6 @@ jobs:
             fi
             exit 1
           fi
-
-      - name: Debug Policy Structure
-        if: hashFiles('policy/*.rego') != ''
-        run: |
-          echo "=== Debugging Policy Structure ==="
-          
-          # Create a debug policy
-          cat > debug-policy.rego << 'EOF'
-          package main
-
-          # Debug: Show what resources we can access
-          warn[sprintf("Top-level resource type: %s", [resource.type])] {
-              resource := input.resources[_]
-          }
-
-          warn[sprintf("Nested resource type: %s, name: %s", [resource.type, resource.name])] {
-              resource := all_resources[_]
-          }
-
-          # Debug: Show storage account properties
-          warn[sprintf("Storage: %s, allowBlobPublicAccess: %v", [resource.name, resource.properties.allowBlobPublicAccess])] {
-              resource := all_resources[_]
-              resource.type == "Microsoft.Storage/storageAccounts"
-          }
-          EOF
-          
-          echo "Running debug policy..."
-          conftest test main.json --policy policy --policy . --no-color 2>&1 | head -100 || true
-          
-          # Clean up
-          rm debug-policy.rego
 
       - name: Run OPA Policy Checks
         id: opa
