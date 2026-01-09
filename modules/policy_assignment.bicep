@@ -9,8 +9,6 @@ var policyDefinitions = {
   // Function App managed identity: "Function apps should use managed identity"
   managedIdentityFunction: '/providers/Microsoft.Authorization/policyDefinitions/0da106f2-4ca3-48e8-bc85-c638fe6aea8f'
   
-  // Alternative: "Managed identity should be used in your Function app"
-  // managedIdentityFunctionAlt: '/providers/Microsoft.Authorization/policyDefinitions/0da106f2-4ca3-48e8-bc85-c638fe6aea8f'
 }
 
 // 1. POLICY: Storage accounts should only allow HTTPS traffic
