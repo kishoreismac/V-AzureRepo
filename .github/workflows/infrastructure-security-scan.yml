@@ -6,7 +6,6 @@ on:
   push:
     branches: [main, develop]
     paths:
-      - '**/*.bicep'
       - '*.bicep'
       - 'modules/**'
       - '.github/workflows/**'
@@ -145,9 +144,9 @@ jobs:
           echo "  - Download 'msdo-security-results' artifact"
           echo ""
 
-      # =======================================
+      # ========================================
       # Final Summary (Always Success)
-      # =======================================
+      # ========================================
       - name: Security Scan Summary
         if: always()
         run: |

@@ -53,4 +53,3 @@ resource managedIdentityPolicy 'Microsoft.Authorization/policyAssignments@2023-0
 // Outputs
 output httpsPolicyAssignmentId string = httpsStoragePolicy.id
 output httpsPolicyAssignmentName string = httpsStoragePolicy.name
-output managedIdentityPolicyAssignmentId string = managedIdentityPolicy.id
