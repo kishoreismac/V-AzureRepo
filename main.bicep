@@ -2,7 +2,7 @@ targetScope = 'subscription'
 
 @minLength(1)
 @maxLength(64)
-@description('Name of the environment used to generate a short unique hash used in all resources.')
+@description('Name of the environment used to generate a short unique hash used in all resources')
 param environmentName string
 
 @metadata({
@@ -222,5 +222,3 @@ output FUNCTION_IDENTITY_PRINCIPAL_ID string = functionApp.outputs.principalId
 output DEPLOYMENT_BLOB_CONTAINER_URI string = deploymentBlobContainerUri
 // Add to outputs in main.bicep
 
-output HTTPS_POLICY_ASSIGNMENT_ID string = policies.outputs.httpsPolicyAssignmentId
-output HTTPS_POLICY_ASSIGNMENT_NAME string = policies.outputs.httpsPolicyAssignmentName

@@ -145,9 +145,9 @@ jobs:
           echo "  - Download 'msdo-security-results' artifact"
           echo ""
 
-      # ========================================
+      # =======================================
       # Final Summary (Always Success)
-      # ========================================
+      # =======================================
       - name: Security Scan Summary
         if: always()
         run: |
