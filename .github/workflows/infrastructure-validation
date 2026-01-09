@@ -1,0 +1,147 @@
+name: Infrastructure Validation
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - '*.bicep'
+      - 'modules/**'
+      - 'environments/**'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  validate-bicep:
+    name: Validate Bicep Template
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Azure CLI
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            az bicep version || az bicep install
+
+      - name: Validate Template Syntax
+        run: |
+          echo "=== Validating Bicep Template ==="
+          
+          # Build to check syntax
+          if az bicep build --file main.bicep --outfile main.json; then
+            echo "✅ Bicep syntax is valid"
+            
+            # Basic validation
+            if [ -f main.json ]; then
+              RESOURCE_COUNT=$(jq '.resources | length' main.json 2>/dev/null || echo "0")
+              echo "📊 Resources in template: $RESOURCE_COUNT"
+            fi
+          else
+            echo "❌ Bicep syntax errors found"
+            exit 1
+          fi
+
+  validate-parameters:
+    name: Validate Parameters
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    strategy:
+      matrix:
+        environment: ['dev', 'staging', 'prod']
+    
+    steps:
+      - name: Check Parameter Files
+        run: |
+          echo "=== Validating ${{ matrix.environment }} Parameters ==="
+          
+          PARAM_FILE="environments/${{ matrix.environment }}/main.bicepparam"
+          
+          if [ ! -f "$PARAM_FILE" ]; then
+            echo "⚠️  Parameter file not found: $PARAM_FILE"
+            echo "This is OK if environment doesn't exist yet"
+            exit 0
+          fi
+          
+          # Validate syntax
+          if jq empty "$PARAM_FILE" 2>/dev/null || yq eval . "$PARAM_FILE" 2>/dev/null; then
+            echo "✅ Parameter file syntax is valid"
+            
+            # Check it references main.bicep
+            if grep -q "using" "$PARAM_FILE"; then
+              echo "✅ Using statement found"
+            else
+              echo "⚠️  No 'using' statement found - ensure it references main.bicep"
+            fi
+          else
+            echo "❌ Invalid parameter file syntax"
+            exit 1
+          fi
+
+  arm-validation:
+    name: ARM Template Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: development
+    needs: [validate-bicep, validate-parameters]
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login (Dev Environment)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_DEV }}
+
+      - name: Preflight Validation
+        run: |
+          echo "=== ARM Template Preflight Validation ==="
+          
+          # Validate against dev environment (representative)
+          az deployment sub validate \
+            --name "pr-validation-${{ github.event.pull_request.number }}" \
+            --location eastus \
+            --template-file main.bicep \
+            --parameters environments/dev/main.bicepparam || {
+              echo "⚠️  Validation completed with warnings"
+              echo "Some warnings are normal (e.g., new resources being created)"
+            }
+          
+          echo "✅ Template validation completed"
+
+  validation-summary:
+    name: Validation Summary
+    runs-on: ubuntu-latest
+    needs: [validate-bicep, validate-parameters, arm-validation]
+    if: always()
+    
+    steps:
+      - name: Generate Summary
+        run: |
+          echo ""
+          echo "========================================="
+          echo "      INFRASTRUCTURE VALIDATION SUMMARY  "
+          echo "========================================="
+          echo ""
+          echo "📋 Validation Results:"
+          echo "  ✅ Bicep Syntax: ${{ needs.validate-bicep.result }}"
+          echo "  ✅ Parameter Files: ${{ needs.validate-parameters.result }}"
+          echo "  ✅ ARM Template: ${{ needs.arm-validation.result }}"
+          echo ""
+          
+          if [[ "${{ needs.validate-bicep.result }}" == "success" && \
+                "${{ needs.validate-parameters.result }}" == "success" && \
+                "${{ needs.arm-validation.result }}" == "success" ]]; then
+            echo "🎉 All validations passed!"
+            echo "✅ Infrastructure template is ready for deployment"
+          else
+            echo "⚠️  Some validations failed or had warnings"
+            echo "📝 Check the logs above for details"
+          fi

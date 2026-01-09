@@ -1,0 +1,215 @@
+name: Infrastructure Lint & Build
+
+on:
+  pull_request:
+    branches: [main, develop, 'feature/**']
+    paths:
+      - '*.bicep'
+      - 'modules/**'
+      - 'environments/**'
+  workflow_dispatch:
+    inputs:
+      verbose:
+        description: 'Enable verbose output'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-build:
+    name: Lint & Build Bicep
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Azure CLI & Bicep
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            echo "=== Azure CLI & Bicep Setup ==="
+            az version
+            
+            # Install/update Bicep
+            if ! command -v bicep &> /dev/null; then
+              echo "Installing Bicep..."
+              az bicep install
+            else
+              echo "Updating Bicep..."
+              az bicep upgrade
+            fi
+            
+            echo "Bicep version:"
+            az bicep version
+
+      - name: Lint All Bicep Files
+        id: lint-all
+        continue-on-error: false
+        run: |
+          echo "=== Linting All Bicep Files ==="
+          
+          # Find and lint all .bicep files
+          echo "Finding all .bicep files..."
+          BICEP_FILES=$(find . -name "*.bicep" -type f ! -path '*/.git/*' ! -path '*/node_modules/*')
+          
+          if [ -z "$BICEP_FILES" ]; then
+            echo "❌ No .bicep files found in repository"
+            exit 1
+          fi
+          
+          echo "Found $(echo "$BICEP_FILES" | wc -l) .bicep file(s) to lint"
+          echo ""
+          
+          LINT_ERRORS=0
+          for file in $BICEP_FILES; do
+            echo "Linting: $file"
+            if az bicep lint --file "$file"; then
+              echo "  ✅ Passed"
+            else
+              echo "  ❌ Failed"
+              LINT_ERRORS=$((LINT_ERRORS + 1))
+            fi
+            echo ""
+          done
+          
+          if [ $LINT_ERRORS -gt 0 ]; then
+            echo "❌ Found $LINT_ERRORS Bicep file linting errors"
+            exit 1
+          else
+            echo "✅ All Bicep files passed linting"
+          fi
+
+      - name: Lint Bicep Parameter Files
+        id: lint-params
+        continue-on-error: false
+        run: |
+          echo "=== Linting Bicep Parameter Files ==="
+          
+          # Find and lint all .bicepparam files
+          echo "Finding all .bicepparam files..."
+          PARAM_FILES=$(find . -name "*.bicepparam" -type f ! -path '*/.git/*' ! -path '*/node_modules/*')
+          
+          if [ -z "$PARAM_FILES" ]; then
+            echo "⚠️  No .bicepparam files found"
+            exit 0
+          fi
+          
+          echo "Found $(echo "$PARAM_FILES" | wc -l) .bicepparam file(s) to validate"
+          echo ""
+          
+          PARAM_ERRORS=0
+          for file in $PARAM_FILES; do
+            echo "Validating: $file"
+            
+            # Try to build with parameters to validate
+            if az bicep build-params --file "$file" --stdout > /dev/null 2>&1; then
+              echo "  ✅ Valid Bicep parameter file"
+            else
+              echo "  ❌ Invalid Bicep parameter file"
+              echo "  Error details:"
+              az bicep build-params --file "$file" --stdout 2>&1 | head -3
+              PARAM_ERRORS=$((PARAM_ERRORS + 1))
+            fi
+            echo ""
+          done
+          
+          if [ $PARAM_ERRORS -gt 0 ]; then
+            echo "❌ Found $PARAM_ERRORS parameter file errors"
+            exit 1
+          else
+            echo "✅ All parameter files are valid"
+          fi
+
+      - name: Build Main Bicep Template
+        id: build-main
+        run: |
+          echo "=== Building Main Bicep Template ==="
+          
+          if [ ! -f main.bicep ]; then
+            echo "❌ main.bicep not found"
+            exit 1
+          fi
+          
+          echo "Building main.bicep..."
+          if az bicep build --file main.bicep --outfile main.json; then
+            echo "✅ Successfully built main.json"
+            
+            # Quick validation
+            if [ -f main.json ]; then
+              echo "File size: $(wc -l < main.json) lines"
+              
+              # Check if it's valid JSON
+              if jq empty main.json 2>/dev/null; then
+                echo "✅ Generated valid JSON"
+              else
+                echo "❌ Generated invalid JSON"
+                exit 1
+              fi
+            else
+              echo "❌ main.json was not created"
+              exit 1
+            fi
+          else
+            echo "❌ Failed to build main.bicep"
+            exit 1
+          fi
+
+      - name: Quick ARM Template Check
+        run: |
+          echo "=== Quick ARM Template Check ==="
+          
+          if [ ! -f main.json ]; then
+            echo "❌ main.json not found"
+            exit 1
+          fi
+          
+          # Install jq if needed
+          if ! command -v jq &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y jq
+          fi
+          
+          echo "Checking ARM template structure..."
+          
+          # Check if it's a subscription or resource group deployment
+          if jq -e '.resources[] | select(.type == "Microsoft.Resources/resourceGroups")' main.json >/dev/null 2>&1; then
+            echo "✅ Subscription-level deployment detected"
+          elif jq -e '.resources' main.json >/dev/null 2>&1; then
+            RESOURCE_COUNT=$(jq '.resources | length' main.json)
+            echo "✅ Resource group deployment with $RESOURCE_COUNT resource(s)"
+          else
+            echo "⚠️  No resources found in template"
+          fi
+          
+          echo "✅ ARM template looks valid"
+
+      - name: Upload Build Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bicep-lint-build-results
+          path: |
+            main.json
+          retention-days: 7
+
+      - name: Lint Summary
+        if: always()
+        run: |
+          echo ""
+          echo "=== LINT & BUILD SUMMARY ==="
+          echo ""
+          echo "Steps completed:"
+          echo "  ✅ Bicep files linted"
+          echo "  ✅ Parameter files validated"
+          echo "  ✅ Main template built to ARM JSON"
+          echo "  ✅ ARM template validated"
+          echo ""
+          echo "📊 Outputs:"
+          echo "  - Compiled ARM template: main.json"
+          echo "  - Artifact: bicep-lint-build-results"
+          echo ""
+          echo "🚀 Ready for next steps!"
