@@ -34,7 +34,7 @@ jobs:
             az version
             az bicep version || az bicep install
 
-      # Optional: Build Bicep to JSON for additional validation
+      #  Optional: Build Bicep to JSON for additional validation
       - name: Build Bicep files
         run: |
           echo "=== Building Bicep Files ==="
