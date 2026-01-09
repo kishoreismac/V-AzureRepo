@@ -45,7 +45,7 @@ jobs:
             fi
             
             echo "Bicep version:"
-            bicep --version
+            az bicep version
 
       - name: Validate Bicep Configuration
         run: |
