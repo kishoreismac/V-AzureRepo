@@ -98,7 +98,7 @@ jobs:
           echo "=== Creating Unified Main Policy File ==="
           
           # Create a simple main.rego that handles nested deployments
-          cat > policy/main.rego << 'EOFPOLICY'
+          cat > policy/main.rego << 'EOF'
           package main
 
           # Helper: Get all resources from nested deployments
@@ -125,38 +125,38 @@ jobs:
           
           echo "✅ Created unified main.rego file"
 
-            - name: Verify Policy Syntax
-              if: hashFiles('policy/*.rego') != ''
-              run: |
-                echo "=== Verifying OPA Policy Syntax ==="
-                
-                echo "Policy files after fixes:"
-                ls -la policy/
-                echo ""
-                
-                echo "Package declarations:"
-                grep "^package" policy/*.rego
-                echo ""
-                
-                # Test policy syntax
-                if conftest verify --policy policy/; then
-                  echo "✅ Policy syntax valid"
-                else
-                  echo "❌ Policy syntax errors found"
-                  
-                  # Show detailed error
-                  echo ""
-                  echo "Detailed errors:"
-                  conftest verify --policy policy/ 2>&1 | head -50
-                  
-                  # Restore backup and exit
-                  if [ -d policy-backup ]; then
-                    echo "Restoring original policy files..."
-                    rm -rf policy
-                    mv policy-backup policy
-                  fi
-                  exit 1
-                fi
+      - name: Verify Policy Syntax
+        if: hashFiles('policy/*.rego') != ''
+        run: |
+          echo "=== Verifying OPA Policy Syntax ==="
+          
+          echo "Policy files after fixes:"
+          ls -la policy/
+          echo ""
+          
+          echo "Package declarations:"
+          grep "^package" policy/*.rego
+          echo ""
+          
+          # Test policy syntax
+          if conftest verify --policy policy/; then
+            echo "✅ Policy syntax valid"
+          else
+            echo "❌ Policy syntax errors found"
+            
+            # Show detailed error
+            echo ""
+            echo "Detailed errors:"
+            conftest verify --policy policy/ 2>&1 | head -50
+            
+            # Restore backup and exit
+            if [ -d policy-backup ]; then
+              echo "Restoring original policy files..."
+              rm -rf policy
+              mv policy-backup policy
+            fi
+            exit 1
+          fi
 
       - name: Debug Policy Structure
         if: hashFiles('policy/*.rego') != ''
