@@ -121,7 +121,6 @@ jobs:
             --location eastus \
             --template-file main.bicep \
             --parameters environments/dev/main.bicepparam \
-            --no-wait
             
           
           # Wait for completion and get outputs
