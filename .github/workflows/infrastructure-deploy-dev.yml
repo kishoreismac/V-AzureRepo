@@ -27,6 +27,7 @@ on:
 permissions:
   contents: read
   id-token: write
+  actions: write
 
 env:
   ENVIRONMENT: dev
