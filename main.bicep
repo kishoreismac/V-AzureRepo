@@ -210,14 +210,14 @@ module policies 'modules/policy_assignment.bicep' = if(environmentName == 'dev')
 // ----------------------------
 // Outputs
 // ----------------------------
-output AZURE_LOCATION string = location
-output AZURE_TENANT_ID string = tenant().tenantId
-output RESOURCE_GROUP_NAME string = rg.name
-output STORAGE_ACCOUNT_NAME string = storage.outputs.name
-output LOG_ANALYTICS_NAME string = logAnalytics.outputs.name
-output APPLICATION_INSIGHTS_NAME string = applicationInsights.outputs.name
-output APPLICATIONINSIGHTS_CONNECTION_STRING string = applicationInsights.outputs.connectionString
-output AZURE_FUNCTION_NAME string = functionApp.outputs.name
-output FUNCTION_IDENTITY_PRINCIPAL_ID string = functionApp.outputs.principalId
-output DEPLOYMENT_BLOB_CONTAINER_URI string = deploymentBlobContainerUri
+output azure_location string = location
+output azure_tenant_id string = tenant().tenantId
+output resource_group_name string = rg.name
+output storage_account_name string = storage.outputs.name
+output log_analytics_name string = logAnalytics.outputs.name
+output application_insights_name string = applicationInsights.outputs.name
+output applicationinsights_connection_string string = applicationInsights.outputs.connectionString
+output azure_function_name string = functionApp.outputs.name
+output function_identity_principal_id string = functionApp.outputs.principalId
+output deployment_blob_container_uri string = deploymentBlobContainerUri
 
