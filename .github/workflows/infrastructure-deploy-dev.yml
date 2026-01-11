@@ -253,5 +253,4 @@ jobs:
             } catch (error) {
               console.log('⚠️ Could not trigger smoke tests:', error.message);
               console.log('This is not a critical failure. Smoke tests can be run manually.');
-              // Don't fail the deployment if smoke tests can't be triggered
             }
