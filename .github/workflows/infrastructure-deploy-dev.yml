@@ -122,18 +122,18 @@ jobs:
             --template-file main.bicep \
             --parameters environments/dev/main.bicepparam \
             --no-wait
+            
           
           # Wait for completion and get outputs
           echo "Waiting for deployment to complete..."
-          OUTPUTS=$(az deployment sub wait \
+          OUTPUTS=$(az deployment sub show \
             --name "$DEPLOYMENT_NAME" \
-            --created \
             --query properties.outputs \
             -o json)
           
           # Extract outputs
-          RESOURCE_GROUP=$(echo "$OUTPUTS" | jq -r '.RESOURCE_GROUP_NAME.value')
-          FUNCTION_APP=$(echo "$OUTPUTS" | jq -r '.AZURE_FUNCTION_NAME.value')
+          RESOURCE_GROUP=$(echo "$OUTPUTS" | jq -r '.resource_group_name.value')
+          FUNCTION_APP=$(echo "$OUTPUTS" | jq -r '.azure_function_name.value')
           
           echo "RESOURCE_GROUP_NAME=$RESOURCE_GROUP" >> $GITHUB_OUTPUT
           echo "AZURE_FUNCTION_NAME=$FUNCTION_APP" >> $GITHUB_OUTPUT
@@ -161,8 +161,8 @@ jobs:
         run: |
           echo "=== Verifying Deployment ==="
           
-          RESOURCE_GROUP="${{ needs.deploy-infrastructure.outputs.resource_group }}"
-          FUNCTION_APP="${{ needs.deploy-infrastructure.outputs.function_app }}"
+          RESOURCE_GROUP="${{ needs.deploy-infrastructure.outputs.RESOURCE_GROUP_NAME }}"
+          FUNCTION_APP="${{ needs.deploy-infrastructure.outputs.AZURE_FUNCTION_NAME }}"
           
           # Quick verification
           if az group exists --name "$RESOURCE_GROUP" --output tsv | grep -q "true"; then
