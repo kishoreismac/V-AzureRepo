@@ -244,7 +244,7 @@ jobs:
                   deployment_run_id: '${{ github.run_id }}',
                   resource_group: '${{ needs.deploy-infrastructure.outputs.resource_group }}',
                   function_app: '${{ needs.deploy-infrastructure.outputs.function_app }}',
-                  environment: '${{ needs.deploy-infrastructure.outputs.environment }}'  # Add this
+                  environment: '${{ needs.deploy-infrastructure.outputs.environment }}'  
 
                 }
               });
