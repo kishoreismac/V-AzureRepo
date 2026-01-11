@@ -161,8 +161,8 @@ jobs:
         run: |
           echo "=== Verifying Deployment ==="
           
-          RESOURCE_GROUP="${{ needs.deploy-infrastructure.outputs.resource_group }}"
-          FUNCTION_APP="${{ needs.deploy-infrastructure.outputs.function_app }}"
+          RESOURCE_GROUP="${{ needs.deploy-infrastructure.outputs.RESOURCE_GROUP_NAME }}"
+          FUNCTION_APP="${{ needs.deploy-infrastructure.outputs.AZURE_FUNCTION_NAME }}"
           
           # Quick verification
           if az group exists --name "$RESOURCE_GROUP" --output tsv | grep -q "true"; then
