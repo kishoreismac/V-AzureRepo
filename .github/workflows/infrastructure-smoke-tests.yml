@@ -37,12 +37,36 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Setup Environment Variables
+        id: setup-env
+        run: |
+          ENV_UPPER=$(echo "${{ inputs.environment }}" | tr '[:lower:]' '[:upper:]')
+          echo "ENV_UPPER=$ENV_UPPER" >> $GITHUB_OUTPUT
+          
+          # Map to subscription ID
+          case "$ENV_UPPER" in
+            "DEV")
+              echo "SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID_DEV }}" >> $GITHUB_OUTPUT
+              ;;
+            "TEST")
+              echo "SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID_TEST }}" >> $GITHUB_OUTPUT
+              ;;
+            "PROD")
+              echo "SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID_PROD }}" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "❌ Unknown environment: $ENV_UPPER"
+              exit 1
+              ;;
+          esac
+
       - name: Azure Login
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets[format('AZURE_SUBSCRIPTION_ID_{0}', inputs.environment.toUpperCase())] }}
+          subscription-id: ${{ steps.setup-env.outputs.SUBSCRIPTION_ID }}
+          
       - name: Setup Test Information
         id: setup
         run: |
