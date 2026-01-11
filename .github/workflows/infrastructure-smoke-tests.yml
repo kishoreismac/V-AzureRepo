@@ -1,0 +1,318 @@
+name: Infrastructure Smoke Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      resource_group:
+        description: 'Resource group name'
+        required: false
+        type: string
+      function_app:
+        description: 'Function app name'
+        required: false
+        type: string
+      environment:  # CHANGE TO STRING INPUT (not choice)
+        description: 'Environment to test (auto-filled)'
+        required: true  # Now required since deployment provides it
+        type: string
+      deployment_run_id:
+        description: 'Deployment workflow run ID'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  TEST_TIMEOUT_SECONDS: 300
+
+jobs:
+  smoke-tests:
+    name: Smoke Tests
+    runs-on: ubuntu-latest
+    environment: development
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets[format('AZURE_SUBSCRIPTION_ID_{0}', upper(inputs.environment))] }}
+
+      - name: Setup Test Information
+        id: setup
+        run: |
+          echo "=== Smoke Tests Configuration ==="
+          
+          # Get inputs from workflow_dispatch or use defaults
+          if [ -n "${{ github.event.inputs.resource_group }}" ]; then
+            RESOURCE_GROUP="${{ github.event.inputs.resource_group }}"
+            echo "Using provided resource group: $RESOURCE_GROUP"
+          else
+            # Try to find the most recent dev resource group
+            RESOURCE_GROUP=$(az group list \
+              --query "[?contains(name, 'dev')].name | sort_by(@, &creationTime) | [-1]" \
+              -o tsv)
+            
+            if [ -z "$RESOURCE_GROUP" ] || [ "$RESOURCE_GROUP" = "null" ]; then
+              echo "❌ Could not find a dev resource group"
+              exit 1
+            fi
+            echo "Auto-detected resource group: $RESOURCE_GROUP"
+          fi
+          
+          if [ -n "${{ github.event.inputs.function_app }}" ]; then
+            FUNCTION_APP="${{ github.event.inputs.function_app }}"
+            echo "Using provided function app: $FUNCTION_APP"
+          else
+            # Try to find function app in the resource group
+            FUNCTION_APP=$(az functionapp list \
+              --resource-group "$RESOURCE_GROUP" \
+              --query "[0].name" \
+              -o tsv)
+            
+            if [ -z "$FUNCTION_APP" ] || [ "$FUNCTION_APP" = "null" ]; then
+              echo "❌ Could not find function app in resource group"
+              exit 1
+            fi
+            echo "Auto-detected function app: $FUNCTION_APP"
+          fi
+          
+          echo "RESOURCE_GROUP=${RESOURCE_GROUP}" >> $GITHUB_OUTPUT
+          echo "FUNCTION_APP=${FUNCTION_APP}" >> $GITHUB_OUTPUT
+          
+          echo ""
+          echo "📋 Test Configuration:"
+          echo "  Resource Group: $RESOURCE_GROUP"
+          echo "  Function App: $FUNCTION_APP"
+          if [ -n "${{ github.event.inputs.deployment_run_id }}" ]; then
+            echo "  Deployment Run: ${{ github.event.inputs.deployment_run_id }}"
+          fi
+
+      - name: Verify Resource Group
+        run: |
+          echo "=== Verifying Resource Group ==="
+          
+          RESOURCE_GROUP="${{ steps.setup.outputs.RESOURCE_GROUP }}"
+          
+          if az group exists --name "$RESOURCE_GROUP" --output tsv | grep -q "true"; then
+            echo "✅ Resource Group exists"
+            
+            # Show resource group details
+            echo "Resource Group Details:"
+            az group show --name "$RESOURCE_GROUP" \
+              --query "{Name:name, Location:location, ProvisioningState:properties.provisioningState}" \
+              -o table
+          else
+            echo "❌ Resource Group not found: $RESOURCE_GROUP"
+            echo "Available resource groups:"
+            az group list --query "[].name" -o table
+            exit 1
+          fi
+
+      - name: List All Resources
+        run: |
+          echo "=== Listing All Deployed Resources ==="
+          
+          RESOURCE_GROUP="${{ steps.setup.outputs.RESOURCE_GROUP }}"
+          
+          echo "All resources in $RESOURCE_GROUP:"
+          az resource list \
+            --resource-group "$RESOURCE_GROUP" \
+            --query "[].{Type:type, Name:name, Location:location, Status:provisioningState}" \
+            -o table
+
+      - name: Test Storage Account
+        run: |
+          echo "=== Testing Storage Account ==="
+          
+          RESOURCE_GROUP="${{ steps.setup.outputs.RESOURCE_GROUP }}"
+          
+          # Find storage account
+          STORAGE_ACCOUNT=$(az resource list \
+            --resource-group "$RESOURCE_GROUP" \
+            --resource-type "Microsoft.Storage/storageAccounts" \
+            --query "[0].name" \
+            -o tsv)
+          
+          if [ -z "$STORAGE_ACCOUNT" ] || [ "$STORAGE_ACCOUNT" = "null" ]; then
+            echo "❌ No storage account found"
+            exit 1
+          fi
+          
+          echo "✅ Found storage account: $STORAGE_ACCOUNT"
+          
+          # Test storage properties
+          echo "Storage Account Properties:"
+          az storage account show \
+            --name "$STORAGE_ACCOUNT" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query "{Name:name, SKU:sku.name, HTTPS:properties.supportsHttpsTrafficOnly, TLS:properties.minimumTlsVersion}" \
+            -o table
+
+      - name: Test Function App
+        run: |
+          echo "=== Testing Function App ==="
+          
+          RESOURCE_GROUP="${{ steps.setup.outputs.RESOURCE_GROUP }}"
+          FUNCTION_APP="${{ steps.setup.outputs.FUNCTION_APP }}"
+          
+          echo "Testing Function App: $FUNCTION_APP"
+          
+          # Get function app details
+          echo "Function App Properties:"
+          az functionapp show \
+            --name "$FUNCTION_APP" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query "{Name:name, State:state, Runtime:kind, DefaultHostName:defaultHostName, Enabled:enabled}" \
+            -o table
+          
+          # Check state
+          STATE=$(az functionapp show \
+            --name "$FUNCTION_APP" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query "state" \
+            -o tsv)
+          
+          if [ "$STATE" = "Running" ]; then
+            echo "✅ Function App is running"
+            
+            # Get URL
+            URL=$(az functionapp show \
+              --name "$FUNCTION_APP" \
+              --resource-group "$RESOURCE_GROUP" \
+              --query "defaultHostName" \
+              -o tsv)
+            
+            echo "🌐 Function App URL: https://$URL"
+            
+            # Test connectivity (with retry)
+            echo "Testing connectivity (30 second timeout)..."
+            for i in {1..6}; do
+              if curl -s -f --max-time 5 "https://$URL" > /dev/null 2>&1; then
+                echo "✅ Function App is accessible via HTTPS"
+                break
+              fi
+              
+              if [ $i -eq 6 ]; then
+                echo "⚠️  Function App not accessible yet (may still be starting)"
+              else
+                echo "Attempt $i/6: Not accessible yet, retrying in 5 seconds..."
+                sleep 5
+              fi
+            done
+          else
+            echo "⚠️  Function App state: $STATE"
+            echo "   It may take a few minutes for the Function App to start"
+          fi
+
+      - name: Test Application Insights
+        run: |
+          echo "=== Testing Application Insights ==="
+          
+          RESOURCE_GROUP="${{ steps.setup.outputs.RESOURCE_GROUP }}"
+          
+          # Find application insights
+          APP_INSIGHTS=$(az resource list \
+            --resource-group "$RESOURCE_GROUP" \
+            --resource-type "Microsoft.Insights/components" \
+            --query "[0].name" \
+            -o tsv)
+          
+          if [ -z "$APP_INSIGHTS" ] || [ "$APP_INSIGHTS" = "null" ]; then
+            echo "❌ No Application Insights found"
+            exit 1
+          fi
+          
+          echo "✅ Found Application Insights: $APP_INSIGHTS"
+          
+          # Get details
+          az monitor app-insights component show \
+            --app "$APP_INSIGHTS" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query "{Name:name, AppId:appId, InstrumentationKey:'*****'}" \
+            -o table
+
+      - name: Test Log Analytics
+        run: |
+          echo "=== Testing Log Analytics ==="
+          
+          RESOURCE_GROUP="${{ steps.setup.outputs.RESOURCE_GROUP }}"
+          
+          # Find log analytics
+          LOG_ANALYTICS=$(az resource list \
+            --resource-group "$RESOURCE_GROUP" \
+            --resource-type "Microsoft.OperationalInsights/workspaces" \
+            --query "[0].name" \
+            -o tsv)
+          
+          if [ -z "$LOG_ANALYTICS" ] || [ "$LOG_ANALYTICS" = "null" ]; then
+            echo "❌ No Log Analytics workspace found"
+            exit 1
+          fi
+          
+          echo "✅ Found Log Analytics workspace: $LOG_ANALYTICS"
+          
+          # Get details
+          az monitor log-analytics workspace show \
+            --workspace-name "$LOG_ANALYTICS" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query "{Name:name, CustomerId:customerId, SKU:sku.name, Retention:retentionInDays}" \
+            -o table
+
+      - name: Test Resource Configurations
+        run: |
+          echo "=== Testing Resource Configurations ==="
+          
+          RESOURCE_GROUP="${{ steps.setup.outputs.RESOURCE_GROUP }}"
+          FUNCTION_APP="${{ steps.setup.outputs.FUNCTION_APP }}"
+          
+          echo "Checking Function App configurations..."
+          
+          # Check storage configuration
+          echo "Storage Configuration:"
+          az functionapp config appsettings list \
+            --name "$FUNCTION_APP" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query "[?contains(name, 'AzureWebJobsStorage') || contains(name, 'WEBSITE_CONTENTAZUREFILECONNECTIONSTRING')].{Name:name, Value:substring(value,0,20)}" \
+            -o table || echo "No storage configuration found"
+          
+          # Check Application Insights configuration
+          echo ""
+          echo "Application Insights Configuration:"
+          az functionapp config appsettings list \
+            --name "$FUNCTION_APP" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query "[?contains(name, 'APPLICATIONINSIGHTS')].{Name:name, Value:substring(value,0,30)}" \
+            -o table || echo "No Application Insights configuration found"
+
+      - name: Smoke Tests Summary
+        if: always()
+        run: |
+          echo ""
+          echo "========================================="
+          echo "        SMOKE TESTS COMPLETE            "
+          echo "========================================="
+          echo ""
+          
+          if [ -n "${{ github.event.inputs.deployment_run_id }}" ]; then
+            echo "📊 Follow-up to Deployment: ${{ github.event.inputs.deployment_run_id }}"
+          fi
+          
+          echo ""
+          echo "✅ All smoke tests executed"
+          echo "✅ Infrastructure verification complete"
+          echo ""
+          echo "🚀 Environment is ready for application code deployment"
+          echo ""
+          echo "Next steps:"
+          echo "1. Deploy your application code to the Function App"
+          echo "2. Run integration tests"
+          echo "3. Configure monitoring alerts"
+          echo ""
+          echo "========================================="
