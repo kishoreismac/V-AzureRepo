@@ -5,6 +5,9 @@ targetScope = 'subscription'
 @description('Name of the environment used to generate a short unique hash used in all resources')
 param environmentName string
 
+@description('Service principal id')
+param servicePrincipalId string
+
 @metadata({
   azd: {
     type: 'location'
@@ -14,6 +17,12 @@ param location string
 
 @description('Optional: Provide an existing resource group name. If empty, a name will be generated.')
 param resourceGroupName string = ''
+
+@description('Name of the App Configuration Store')
+param appConfigName string = ''
+
+@description('Name of the Key Vault')
+param keyVaultName string = ''
 
 @description('Optional: Provide an existing Function App plan name. If empty, a name will be generated.')
 param functionPlanName string = ''
@@ -62,6 +71,14 @@ var rgName_resolved = !empty(resourceGroupName)
   ? resourceGroupName
   : '${abbrs.resourcesResourceGroups}${environmentName}'
 
+var appConfigName_resolved = !empty(appConfigName)
+  ? appConfigName
+  : '${abbrs.appConfigurationConfigurationStores}${environmentName}-${take(resourceToken, 8)}'
+
+var keyVaultName_resolved = !empty(keyVaultName)
+  ? keyVaultName
+  : '${abbrs.keyVaultVaults}${environmentName}-${take(resourceToken, 8)}'
+
 var functionAppName_resolved = !empty(functionAppName)
   ? functionAppName
   : '${abbrs.webSitesFunctions}${resourceToken}' // function apps allow longer names
@@ -98,6 +115,22 @@ resource rg 'Microsoft.Resources/resourceGroups@2024-11-01' = {
   name: rgName_resolved
   location: location
   tags: tags
+}
+
+module appConfig 'modules/app_config.bicep' = {
+  name: 'appconfig'
+  scope: rg
+  params: {
+    appConfigName: appConfigName_resolved
+  }
+}
+
+module keyVault 'modules/key_vault.bicep' = {
+  name: 'keyvault'
+  scope: rg
+  params: {
+    keyVaultName: keyVaultName_resolved
+  }
 }
 
 // ----------------------------
@@ -193,9 +226,10 @@ module rbacAssignments 'modules/rbac.bicep' = {
     storageAccountName: storage.outputs.name
     appInsightsName: applicationInsights.outputs.name
     managedIdentityPrincipalId: functionApp.outputs.principalId
-
+    servicePrincipalId: servicePrincipalId
     userIdentityPrincipalId: principalId
     allowUserIdentityPrincipal: !empty(principalId)
+    appConfigName: appConfigName_resolved
   }
 }
 
@@ -218,6 +252,10 @@ output log_analytics_name string = logAnalytics.outputs.name
 output application_insights_name string = applicationInsights.outputs.name
 output applicationinsights_connection_string string = applicationInsights.outputs.connectionString
 output azure_function_name string = functionApp.outputs.name
-output function_identity_principal_id string = functionApp.outputs.principalId
+output function_app_id string = functionApp.outputs.principalId
 output deployment_blob_container_uri string = deploymentBlobContainerUri
+output app_config_name string = appConfig.name
+output app_config_endpoint string = appConfig.outputs.appConfigEnpoint
+output key_vault_name string = keyVault.name
+
 

@@ -4,7 +4,9 @@
 
 param storageAccountName string
 param appInsightsName string
+param appConfigName string
 param managedIdentityPrincipalId string
+param servicePrincipalId string
 param userIdentityPrincipalId string = ''
 param allowUserIdentityPrincipal bool = false
 
@@ -14,6 +16,7 @@ var roleDefinitions = {
   storageQueueDataContributor: '974c5e8b-45b9-4653-ba55-5f855dd0fb88'
   storageTableDataContributor: '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'
   monitoringMetricsPublisher: '3913510d-42f4-4e42-8a64-420c390055eb'
+  appConfigDataOwner: '5ae67dd6-50cb-40e7-96ff-dc2bfa4b606b'
 }
 
 resource storageAccount 'Microsoft.Storage/storageAccounts@2022-09-01' existing = {
@@ -24,15 +27,20 @@ resource applicationInsights 'Microsoft.Insights/components@2020-02-02' existing
   name: appInsightsName
 }
 
+resource appConfig 'Microsoft.AppConfiguration/configurationStores@2025-02-01-preview' existing = {
+  name: appConfigName
+}
+
 var storageScopeId = storageAccount.id
 var appInsightsScopeId = applicationInsights.id
+var appConfigScopeId = appConfig.id
 
 // Helper: role definition resource IDs (must be fully-qualified)
 var storageBlobDataOwnerRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleDefinitions.storageBlobDataOwner)
 var storageQueueDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleDefinitions.storageQueueDataContributor)
 var storageTableDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleDefinitions.storageTableDataContributor)
 var monitoringMetricsPublisherRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleDefinitions.monitoringMetricsPublisher)
-
+var appConfigDataOwnerRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleDefinitions.appConfigDataOwner)
 //
 // -------- Storage RBAC for System-Assigned Managed Identity --------
 //
@@ -138,5 +146,16 @@ resource ra_appinsights_metrics_user 'Microsoft.Authorization/roleAssignments@20
     principalId: userIdentityPrincipalId
     principalType: 'User'
     description: 'Monitoring Metrics Publisher role for user identity (development/testing)'
+  }
+}
+
+resource ra_appconfig_dataowner_mi 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(managedIdentityPrincipalId)) {
+  name: guid(appConfigScopeId, servicePrincipalId, appConfigDataOwnerRoleId)
+  scope: appConfig
+  properties: {
+    roleDefinitionId: appConfigDataOwnerRoleId
+    principalId: servicePrincipalId
+    principalType: 'ServicePrincipal'
+    description: 'App Configuration Data Owner role for Function App system-assigned managed identity'
   }
 }

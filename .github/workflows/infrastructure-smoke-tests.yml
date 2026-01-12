@@ -19,6 +19,10 @@ on:
         description: 'Deployment workflow run ID'
         required: false
         type: string
+      app_config:
+        description: 'App Configuration name'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -339,3 +343,16 @@ jobs:
           echo "3. Configure monitoring alerts"
           echo ""
           echo "========================================="
+
+       # In infrastructure-smoke-tests.yml, add at the end:
+      - name: Mark Infra CI/CD Complete
+        run: |
+          echo "✅ INFRASTRUCTURE CI/CD PIPELINE COMPLETE"
+          echo "Application can now be deployed to this environment"
+          
+          # Write completion status to App Config
+          az appconfig kv set \
+            --name "${{ github.event.inputs.app_config }}" \
+            --key "InfraPipeline:Status" \
+            --value "COMPLETE" \
+            --tags "completed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
