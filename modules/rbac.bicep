@@ -149,13 +149,13 @@ resource ra_appinsights_metrics_user 'Microsoft.Authorization/roleAssignments@20
   }
 }
 
-resource ra_appconfig_dataowner_mi 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(managedIdentityPrincipalId)) {
+resource ra_appconfig_dataowner_mi 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(servicePrincipalId)) {
   name: guid(appConfigScopeId, servicePrincipalId, appConfigDataOwnerRoleId)
   scope: appConfig
   properties: {
     roleDefinitionId: appConfigDataOwnerRoleId
     principalId: servicePrincipalId
     principalType: 'ServicePrincipal'
-    description: 'App Configuration Data Owner role for Function App system-assigned managed identity'
+    description: 'App Configuration Data Owner role for Service Principal'
   }
 }
