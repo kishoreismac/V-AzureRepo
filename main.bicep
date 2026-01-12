@@ -254,7 +254,7 @@ output applicationinsights_connection_string string = applicationInsights.output
 output azure_function_name string = functionApp.outputs.name
 output function_app_id string = functionApp.outputs.principalId
 output deployment_blob_container_uri string = deploymentBlobContainerUri
-output app_config_name string = appConfig.name
+output app_config_name string = appConfig.outputs.appConfigName
 output app_config_endpoint string = appConfig.outputs.appConfigEnpoint
 output key_vault_name string = keyVault.name
 

@@ -23,3 +23,4 @@ resource appConfig 'Microsoft.AppConfiguration/configurationStores@2025-02-01-pr
 }
 
 output appConfigEnpoint string = appConfig.properties.endpoint
+output appConfigName string = appConfig.name
