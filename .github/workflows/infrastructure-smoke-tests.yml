@@ -348,88 +348,25 @@ jobs:
           echo "========================================="
 
        # In infrastructure-smoke-tests.yml, add at the end:
-      - name: Write to App Config (Fixed)
+      - name: Write to App Config 
         run: |
-          echo "=== Writing to App Configuration ==="
-          
-          RESOURCE_GROUP="rg-vsamplepython-dev"
-          APP_CONFIG="appconfig-vsample-dev"
-          
-          # Step 1: Get connection string with error handling
-          echo "1. Retrieving connection string..."
-          
-          # Try multiple ways to get connection string
-          CONN_STRING=""
-          
-          # Method 1: Try to get primary read-write
-          echo "   Trying method 1: Primary read-write..."
+          # Get connection string and write in one command chain
+
           CONN_STRING=$(az appconfig credential list \
-            --name "$APP_CONFIG" \
-            --resource-group "$RESOURCE_GROUP" \
-            --query "[?contains(name, 'Primary') && permissions.read && permissions.write].connectionString | [0]" \
-            -o tsv 2>/dev/null || echo "")
+            --name "${{ github.event.inputs.app_config }}" \
+            --resource-group "${{ github.event.inputs.resource_group }}")
           
-          # Method 2: Try any key with read/write
-          if [ -z "$CONN_STRING" ]; then
-            echo "   Trying method 2: Any read-write key..."
-            CONN_STRING=$(az appconfig credential list \
-              --name "$APP_CONFIG" \
-              --resource-group "$RESOURCE_GROUP" \
-              --query "[?permissions.read && permissions.write].connectionString | [0]" \
-              -o tsv 2>/dev/null || echo "")
-          fi
+          echo "$CONN_STRING"
           
-          # Method 3: Try the first key (even read-only)
-          if [ -z "$CONN_STRING" ]; then
-            echo "   Trying method 3: First available key..."
-            CONN_STRING=$(az appconfig credential list \
-              --name "$APP_CONFIG" \
-              --resource-group "$RESOURCE_GROUP" \
-              --query "[0].connectionString" \
-              -o tsv 2>/dev/null || echo "")
-          fi
-          
-          # Method 4: Try without permissions filter
-          if [ -z "$CONN_STRING" ]; then
-            echo "   Trying method 4: Raw list..."
-            CRED_LIST=$(az appconfig credential list \
-              --name "$APP_CONFIG" \
-              --resource-group "$RESOURCE_GROUP" \
-              --output json 2>/dev/null || echo "[]")
-            
-            CONN_STRING=$(echo "$CRED_LIST" | jq -r '.[0].connectionString // empty')
-          fi
-          
-          # Check if we got a connection string
-          if [ -z "$CONN_STRING" ]; then
-            echo "❌ ERROR: Could not retrieve any connection string"
-            echo ""
-            echo "Possible reasons:"
-            echo "1. App Configuration doesn't exist: $APP_CONFIG"
-            echo "2. Resource group is wrong: $RESOURCE_GROUP"
-            echo "3. No access keys are configured"
-            echo "4. Service Principal doesn't have permission to list keys"
+          if [ -z "$CONN_STRING" ] || [ "$CONN_STRING" = "null" ]; then
+            echo "❌ Could not retrieve App Configuration connection string"
             exit 1
           fi
           
-          # Mask the connection string in logs
-          echo "::add-mask::$CONN_STRING"
-          echo "✅ Successfully retrieved connection string"
-          
-          # Step 2: Write to App Config
-          echo "2. Writing key-value pair..."
           az appconfig kv set \
             --connection-string "$CONN_STRING" \
             --key "InfraPipeline:Status" \
             --value "COMPLETE" \
-            --tags "completed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "source=GitHubActions"
+            --tags "completed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           
           echo "✅ Successfully wrote to App Configuration"
-          
-          # Step 3: Verify
-          echo "3. Verifying write..."
-          az appconfig kv show \
-            --connection-string "$CONN_STRING" \
-            --key "InfraPipeline:Status" \
-            --query "{key:key, value:value, tags:tags, lastModified:lastModified}" \
-            -o table
