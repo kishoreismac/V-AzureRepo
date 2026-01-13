@@ -90,13 +90,26 @@ jobs:
           enable-AzPSSession: true
           audience: 'api://AzureADTokenExchange'
 
-      - name: Verify Authentication
+      - name: Get Service Principal Details
         run: |
-          echo "=== Testing Authentication ==="
-          az account show --query "{name:name, user:user.name, userType:user.type}"
+          echo "=== Full Account Info ==="
+          az account show --output json
           
-          # Test with a simple command
-          az group list --query "[0].{name:name, location:location}" --output table
+          echo "=== Getting Service Principal Object ID ==="
+          # Get the user name (should be the SP Object ID or App ID)
+          USER_NAME=$(az account show --query "user.name" -o tsv)
+          echo "User name from account: $USER_NAME"
+          
+          # Try to get details
+          echo "=== Attempt 1: Try as Object ID ==="
+          az ad sp show --id "$USER_NAME" --query "{displayName:displayName, objectId:id, appId:appId}" || echo "Not found as Object ID"
+          
+          echo "=== Attempt 2: Try as App ID ==="
+          az ad sp show --id "$USER_NAME" --query "{displayName:displayName, objectId:id, appId:appId}" || echo "Not found as App ID"
+          
+          echo "=== Attempt 3: List all SPs and search ==="
+          # This might be heavy, but let's try
+          az ad sp list --query "[?appId=='$USER_NAME' || id=='$USER_NAME'].{displayName:displayName, objectId:id, appId:appId}" --output table
 
       - name: Quick Template Validation
         # Minimal validation - full validation already happened in PR

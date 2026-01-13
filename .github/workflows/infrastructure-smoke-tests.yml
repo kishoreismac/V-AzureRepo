@@ -71,6 +71,7 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ steps.setup-env.outputs.SUBSCRIPTION_ID }}
           
+          
       - name: Setup Test Information
         id: setup
         run: |
