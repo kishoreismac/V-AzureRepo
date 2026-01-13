@@ -27,5 +27,5 @@ param zoneRedundant = false
 // Optional: user objectId for dev/test access (leave empty for prod)
 param principalId = ''
 
-param servicePrincipalId =  '92af43c1-4683-4d2b-a014-ae6d79797454'
+param servicePrincipalId = '92af43c1-4683-4d2b-a014-ae6d79797454'
 

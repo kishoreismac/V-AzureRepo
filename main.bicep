@@ -229,7 +229,7 @@ module rbacAssignments 'modules/rbac.bicep' = {
     servicePrincipalId: servicePrincipalId
     userIdentityPrincipalId: principalId
     allowUserIdentityPrincipal: !empty(principalId)
-    appConfigName: appConfigName_resolved
+    appConfigName: appConfig.outputs.appConfigName
   }
 }
 
