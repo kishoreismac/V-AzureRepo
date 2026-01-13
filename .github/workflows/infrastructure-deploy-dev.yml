@@ -253,8 +253,17 @@ jobs:
 
                 }
               });
+
               
-              console.log('✅ Smoke tests triggered successfully');
+      - name: Debug GitHub Identity
+        run: |
+          echo "=== GitHub Actions Identity ==="
+          az ad signed-in-user show --query "{displayName:displayName, objectId:id, userType:userType}"
+          
+          echo "=== Object ID to use in Bicep ==="
+          az ad signed-in-user show --query id -o tsv
+                    
+                    console.log('✅ Smoke tests triggered successfully');
             } catch (error) {
               console.log('⚠️ Could not trigger smoke tests:', error.message);
               console.log('This is not a critical failure. Smoke tests can be run manually.');
