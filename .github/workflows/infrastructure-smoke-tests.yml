@@ -357,3 +357,6 @@ jobs:
             --key "InfraPipeline:Status" \
             --value "COMPLETE" \
             --tags "completed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            --auth-mode login
+          
+          echo "✅ Successfully wrote to App Configuration"
