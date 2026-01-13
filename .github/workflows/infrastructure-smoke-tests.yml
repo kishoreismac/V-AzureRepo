@@ -11,7 +11,7 @@ on:
         description: 'Function app name'
         required: false
         type: string
-      environment:  # CHANGE TO STRING INPUT (not choice)
+      environment:  
         description: 'Environment to test (auto-filled)'
         required: true  # Now required since deployment provides it
         type: string
@@ -30,6 +30,7 @@ permissions:
 
 env:
   TEST_TIMEOUT_SECONDS: 300
+
 
 jobs:
   smoke-tests:
@@ -70,6 +71,7 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ steps.setup-env.outputs.SUBSCRIPTION_ID }}
+          audience: api://AzureADTokenExchange
           
           
       - name: Setup Test Information
@@ -346,17 +348,17 @@ jobs:
           echo "========================================="
 
        # In infrastructure-smoke-tests.yml, add at the end:
-      - name: Mark Infra CI/CD Complete
+      - name: Write to App Config 
         run: |
-          echo "✅ INFRASTRUCTURE CI/CD PIPELINE COMPLETE"
-          echo "Application can now be deployed to this environment"
-          
-          # Write completion status to App Config
+          # Get connection string and write in one command chain
           az appconfig kv set \
-            --name "${{ github.event.inputs.app_config }}" \
+            --connection-string "$(az appconfig credential list \
+              --name "${{ github.event.inputs.app_config }}" \
+              --resource-group "${{ github.event.inputs.resource_group }}" \
+              --query "[?permissions.read && permissions.write].connectionString | [0]" \
+              -o tsv)" \
             --key "InfraPipeline:Status" \
             --value "COMPLETE" \
             --tags "completed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-            --auth-mode login
           
           echo "✅ Successfully wrote to App Configuration"
