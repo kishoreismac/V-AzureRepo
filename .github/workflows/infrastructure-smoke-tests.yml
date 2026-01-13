@@ -392,8 +392,7 @@ jobs:
           # First test read
           echo "Testing read access..."
           az appconfig kv list \
-            --name "appconfig-vsample-dev" \
-            --resource-group "rg-vsamplepython-dev" \
+            -n "appconfig-vsample-dev" \
             --auth-mode login \
             --query "length(@)" \
             -o tsv && echo "✅ Read access OK"
@@ -401,8 +400,7 @@ jobs:
           # Then write
           echo "Testing write access..."
           az appconfig kv set \
-            --name "appconfig-vsample-dev" \
-            --resource-group "rg-vsamplepython-dev" \
+            -n "appconfig-vsample-dev" \
             --key "TestKey" \
             --value "TestValue_$(date +%s)" \
             --auth-mode login && echo "✅ Write access OK"
