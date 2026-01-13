@@ -248,13 +248,17 @@ jobs:
                   deployment_run_id: '${{ github.run_id }}',
                   resource_group: '${{ needs.deploy-infrastructure.outputs.resource_group }}',
                   function_app: '${{ needs.deploy-infrastructure.outputs.function_app }}',
-                  environment: '${{ needs.deploy-infrastructure.outputs.environment }}',
-                  app_config: '${{ needs.deploy-infrastructure.outputs.app_config }}'  
+                  environment: '${{ needs.deploy-infrastructure.outputs.environment }}',  
 
                 }
               });
-
               
+              console.log('✅ Smoke tests triggered successfully');
+            } catch (error) {
+              console.log('⚠️ Could not trigger smoke tests:', error.message);
+              console.log('This is not a critical failure. Smoke tests can be run manually.');
+            }
+            
       - name: Debug GitHub Identity
         run: |
           echo "=== GitHub Actions Identity ==="
@@ -262,9 +266,7 @@ jobs:
           
           echo "=== Object ID to use in Bicep ==="
           az ad signed-in-user show --query id -o tsv
-                    
-                    console.log('✅ Smoke tests triggered successfully');
-            } catch (error) {
-              console.log('⚠️ Could not trigger smoke tests:', error.message);
-              console.log('This is not a critical failure. Smoke tests can be run manually.');
-            }
+
+
+
+            
