@@ -357,8 +357,8 @@ jobs:
           
           # Get App Config resource ID
           APP_CONFIG_ID=$(az appconfig show \
-            --name "appconfig-vsample-dev" \
-            --resource-group "rg-vsamplepython-dev" \
+            --name "${{ github.event.inputs.app_config }}" \
+            --resource-group "${{ github.event.inputs.resource_group }}" \
             --query id \
             -o tsv)
           
@@ -392,7 +392,7 @@ jobs:
           # First test read
           echo "Testing read access..."
           az appconfig kv list \
-            -n "appconfig-vsample-dev" \
+            -n "${{ github.event.inputs.app_config }}" \
             --auth-mode login \
             --query "length(@)" \
             -o tsv && echo "✅ Read access OK"
@@ -400,7 +400,8 @@ jobs:
           # Then write
           echo "Testing write access..."
           az appconfig kv set \
-            -n "appconfig-vsample-dev" \
+            -n "${{ github.event.inputs.app_config }}" \
             --key "TestKey" \
             --value "TestValue_$(date +%s)" \
-            --auth-mode login && echo "✅ Write access OK"
+            --auth-mode login \
+            --yes && echo "✅ Write access OK"
