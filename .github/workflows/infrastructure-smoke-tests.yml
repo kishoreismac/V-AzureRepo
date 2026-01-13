@@ -348,25 +348,61 @@ jobs:
           echo "========================================="
 
        # In infrastructure-smoke-tests.yml, add at the end:
-      - name: Write to App Config 
+      - name: Ensure App Config Access
         run: |
-          # Get connection string and write in one command chain
+          echo "=== Ensuring Azure AD Access to App Config ==="
+          
+          # Your Service Principal Object ID
+          SP_OBJECT_ID="92af43c1-4683-4d2b-a014-ae6d79797454"
+          
+          # Get App Config resource ID
+          APP_CONFIG_ID=$(az appconfig show \
+            --name "appconfig-vsample-dev" \
+            --resource-group "rg-vsamplepython-dev" \
+            --query id \
+            -o tsv)
+          
+          echo "App Config Resource ID: $APP_CONFIG_ID"
+          echo "Service Principal Object ID: $SP_OBJECT_ID"
+          
+          # Check current role assignments
+          echo "=== Checking role assignments ==="
+          az role assignment list \
+            --scope "$APP_CONFIG_ID" \
+            --assignee "$SP_OBJECT_ID" \
+            --output table
+          
+          # Assign role if not already assigned
+          echo "=== Assigning 'App Configuration Data Owner' role ==="
+          az role assignment create \
+            --assignee "$SP_OBJECT_ID" \
+            --role "App Configuration Data Owner" \
+            --scope "$APP_CONFIG_ID" \
+            --description "GitHub Actions write access" || echo "Role may already exist"
+          
+          echo "✅ Role assignment complete"
+          
+          # Wait for propagation
+          sleep 15
 
-          CONN_STRING=$(az appconfig credential list \
-            --name "${{ github.event.inputs.app_config }}" \
-            --resource-group "${{ github.event.inputs.resource_group }}")
+      - name: Test App Config Write
+        run: |
+          echo "=== Testing App Config Write ==="
           
-          echo "$CONN_STRING"
+          # First test read
+          echo "Testing read access..."
+          az appconfig kv list \
+            --name "appconfig-vsample-dev" \
+            --resource-group "rg-vsamplepython-dev" \
+            --auth-mode login \
+            --query "length(@)" \
+            -o tsv && echo "✅ Read access OK"
           
-          if [ -z "$CONN_STRING" ] || [ "$CONN_STRING" = "null" ]; then
-            echo "❌ Could not retrieve App Configuration connection string"
-            exit 1
-          fi
-          
+          # Then write
+          echo "Testing write access..."
           az appconfig kv set \
-            --connection-string "$CONN_STRING" \
-            --key "InfraPipeline:Status" \
-            --value "COMPLETE" \
-            --tags "completed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          
-          echo "✅ Successfully wrote to App Configuration"
+            --name "appconfig-vsample-dev" \
+            --resource-group "rg-vsamplepython-dev" \
+            --key "TestKey" \
+            --value "TestValue_$(date +%s)" \
+            --auth-mode login && echo "✅ Write access OK"
