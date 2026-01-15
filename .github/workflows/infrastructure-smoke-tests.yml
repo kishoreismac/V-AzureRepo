@@ -348,60 +348,38 @@ jobs:
           echo "========================================="
 
        # In infrastructure-smoke-tests.yml, add at the end:
-      - name: Ensure App Config Access
+      - name: Mark Infra CI/CD Complete
         run: |
-          echo "=== Ensuring Azure AD Access to App Config ==="
+          echo "✅ INFRASTRUCTURE CI/CD PIPELINE COMPLETE"
+          echo "Application can now be deployed to this environment"
           
-          # Your Service Principal Object ID
-          SP_OBJECT_ID="92af43c1-4683-4d2b-a014-ae6d79797454"
-          
-          # Get App Config resource ID
-          APP_CONFIG_ID=$(az appconfig show \
-            --name "${{ github.event.inputs.app_config }}" \
-            --resource-group "${{ github.event.inputs.resource_group }}" \
-            --query id \
-            -o tsv)
-          
-          echo "App Config Resource ID: $APP_CONFIG_ID"
-          echo "Service Principal Object ID: $SP_OBJECT_ID"
-          
-          # Check current role assignments
-          echo "=== Checking role assignments ==="
-          az role assignment list \
-            --scope "$APP_CONFIG_ID" \
-            --assignee "$SP_OBJECT_ID" \
-            --output table
-          
-          # Assign role if not already assigned
-          echo "=== Assigning 'App Configuration Data Owner' role ==="
-          az role assignment create \
-            --assignee "$SP_OBJECT_ID" \
-            --role "App Configuration Data Owner" \
-            --scope "$APP_CONFIG_ID" \
-            --description "GitHub Actions write access" || echo "Role may already exist"
-          
-          echo "✅ Role assignment complete"
-          
-          # Wait for propagation
-          sleep 15
-
-      - name: Test App Config Write
-        run: |
-          echo "=== Testing App Config Write ==="
-          
-          # First test read
-          echo "Testing read access..."
-          az appconfig kv list \
-            -n "${{ github.event.inputs.app_config }}" \
-            --auth-mode login \
-            --query "length(@)" \
-            -o tsv && echo "✅ Read access OK"
-          
-          # Then write
-          echo "Testing write access..."
+          # Write completion status to App Config
           az appconfig kv set \
             -n "${{ github.event.inputs.app_config }}" \
-            --key "TestKey" \
-            --value "TestValue_$(date +%s)" \
+            --key "InfraPipeline:Status" \
+            --value "COMPLETE" \
             --auth-mode login \
-            --yes && echo "✅ Write access OK"
+            --yes
+          
+          az appconfig kv set \
+            -n "${{ github.event.inputs.app_config }}" \
+            --key "InfraPipeline:ResourceGroupName" \
+            --value "${{ github.event.inputs.resource_group }}" \
+            --auth-mode login \
+            --yes
+          
+          az appconfig kv set \
+            -n "${{ github.event.inputs.app_config }}" \
+            --key "InfraPipeline:FunctionAppName" \
+            --value "${{ github.event.inputs.function_app }}" \
+            --auth-mode login \
+            --yes
+          
+          az appconfig kv set \
+            -n "${{ github.event.inputs.app_config }}" \
+            --key "InfraPipeline:AppConfigName" \
+            --value "${{ github.event.inputs.app_config }}" \
+            --auth-mode login \
+            --yes
+
+          echo "✅ Successfully wrote to App Configuration"
