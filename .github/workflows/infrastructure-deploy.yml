@@ -29,7 +29,56 @@ jobs:
   # ===========================
   # 0) RESOLVE ENV + PARAMETERS
   # ===========================
+  prereq-check:
+    name: Verify Pre-deploy Checks Passed
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Verify required workflows succeeded for this SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update -y >/dev/null
+          sudo apt-get install -y jq >/dev/null
+
+          echo "Checking prereqs for:"
+          echo "  SHA=$SHA"
+          echo "  BRANCH=$BRANCH"
+
+          RUNS=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/actions/runs?branch=$BRANCH&per_page=100")
+
+          need_ok () {
+            local wf="$1"
+            local conclusion
+            conclusion=$(echo "$RUNS" | jq -r --arg sha "$SHA" --arg wf "$wf" '
+              [.workflow_runs[]
+                | select(.head_sha == $sha)
+                | select(.name == $wf)
+                | .conclusion][0] // "missing"
+            ')
+            echo "$wf conclusion: $conclusion"
+            if [ "$conclusion" != "success" ]; then
+              echo "❌ Missing/failed prerequisite workflow: $wf"
+              exit 1
+            fi
+          }
+
+          need_ok "Infrastructure Validation"
+          need_ok "Infrastructure Security Scan"
+          need_ok "Infrastructure Compliance Check"
+          need_ok "Infrastructure Lint"
+
+          echo "✅ All pre-deploy checks passed."
+
   resolve:
+    needs: prereq-check
     name: Resolve Environment Inputs
     runs-on: ubuntu-latest
 
