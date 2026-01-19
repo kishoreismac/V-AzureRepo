@@ -81,6 +81,7 @@ jobs:
     needs: prereq-check
     name: Resolve Environment Inputs
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
 
     outputs:
       env: ${{ steps.o.outputs.env }}
