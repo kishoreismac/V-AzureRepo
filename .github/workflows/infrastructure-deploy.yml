@@ -72,8 +72,8 @@ jobs:
 
           need_ok "Infrastructure Validation"
           need_ok "Infrastructure Security Scan"
-          need_ok "Infrastructure Compliance Check"
-          need_ok "Infrastructure Lint"
+          need_ok "Infrastructure Policy Compliance"
+          need_ok "Infrastructure Lint & Build"
 
           echo "✅ All pre-deploy checks passed."
 
