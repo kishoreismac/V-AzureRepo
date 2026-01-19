@@ -1,15 +1,15 @@
 // modules/policy_assignments.bicep
 param environmentName string
 
-
-// Policy definitions IDs (you can find more in Azure Portal or with CLI)
+// CORRECTED Policy definitions IDs
 var policyDefinitions = {
+  // Storage HTTPS: "Secure transfer to storage accounts should be enabled"
   requireHttpsStorage: '/providers/Microsoft.Authorization/policyDefinitions/404c3081-a854-4457-ae30-26a93ef643f9'
-  secureTransferStorage: '/providers/Microsoft.Authorization/policyDefinitions/404c3081-a854-4457-ae30-26a93ef643f9'
-  managedIdentityFunction: '/providers/Microsoft.Authorization/policyDefinitions/f8a0fd5d-f5e4-4fc6-bdb5-8c0a1a5b0b7a'
-  // Add more policy IDs as needed
+  
+  // Function App managed identity: "Function apps should use managed identity"
+  managedIdentityFunction: '/providers/Microsoft.Authorization/policyDefinitions/0da106f2-4ca3-48e8-bc85-c638fe6aea8f'
+  
 }
-
 
 // 1. POLICY: Storage accounts should only allow HTTPS traffic
 resource httpsStoragePolicy 'Microsoft.Authorization/policyAssignments@2023-04-01' = {
@@ -19,10 +19,10 @@ resource httpsStoragePolicy 'Microsoft.Authorization/policyAssignments@2023-04-0
     policyDefinitionId: policyDefinitions.requireHttpsStorage
     displayName: 'Require HTTPS for Storage - ${environmentName}'
     description: 'Enforces HTTPS-only traffic for storage accounts in ${environmentName} environment'
-    enforcementMode: 'Default' // Can be 'Default' or 'DoNotEnforce'
+    enforcementMode: 'Default'
     parameters: {
       effect: {
-        value: 'Audit' // Can be 'Deny', 'Audit', or 'Disabled'
+        value: 'Audit'
       }
     }
     nonComplianceMessages: [{
@@ -31,7 +31,7 @@ resource httpsStoragePolicy 'Microsoft.Authorization/policyAssignments@2023-04-0
   }
 }
 
-// 2. POLICY: Function Apps should use managed identity (optional)
+// 2. POLICY: Function Apps should use managed identity
 resource managedIdentityPolicy 'Microsoft.Authorization/policyAssignments@2023-04-01' = {
   name: 'require-managed-identity-func-${environmentName}'
   scope: resourceGroup()
@@ -42,7 +42,7 @@ resource managedIdentityPolicy 'Microsoft.Authorization/policyAssignments@2023-0
     enforcementMode: 'Default'
     parameters: {
       effect: {
-        value: 'Audit'
+        value: 'AuditIfNotExists'
       }
     }
   }
@@ -51,4 +51,3 @@ resource managedIdentityPolicy 'Microsoft.Authorization/policyAssignments@2023-0
 // Outputs
 output httpsPolicyAssignmentId string = httpsStoragePolicy.id
 output httpsPolicyAssignmentName string = httpsStoragePolicy.name
-output managedIdentityPolicyAssignmentId string = managedIdentityPolicy.id

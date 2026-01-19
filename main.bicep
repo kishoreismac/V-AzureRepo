@@ -2,8 +2,11 @@ targetScope = 'subscription'
 
 @minLength(1)
 @maxLength(64)
-@description('Name of the environment used to generate a short unique hash used in all resources.')
+@description('Name of the environment used to generate a short unique hash used in all resources')
 param environmentName string
+
+@description('Service principal id')
+param servicePrincipalId string
 
 @metadata({
   azd: {
@@ -14,6 +17,12 @@ param location string
 
 @description('Optional: Provide an existing resource group name. If empty, a name will be generated.')
 param resourceGroupName string = ''
+
+@description('Name of the App Configuration Store')
+param appConfigName string = ''
+
+@description('Name of the Key Vault')
+param keyVaultName string = ''
 
 @description('Optional: Provide an existing Function App plan name. If empty, a name will be generated.')
 param functionPlanName string = ''
@@ -62,6 +71,14 @@ var rgName_resolved = !empty(resourceGroupName)
   ? resourceGroupName
   : '${abbrs.resourcesResourceGroups}${environmentName}'
 
+var appConfigName_resolved = !empty(appConfigName)
+  ? appConfigName
+  : '${abbrs.appConfigurationConfigurationStores}${environmentName}-${take(resourceToken, 8)}'
+
+var keyVaultName_resolved = !empty(keyVaultName)
+  ? keyVaultName
+  : '${abbrs.keyVaultVaults}${environmentName}-${take(resourceToken, 8)}'
+
 var functionAppName_resolved = !empty(functionAppName)
   ? functionAppName
   : '${abbrs.webSitesFunctions}${resourceToken}' // function apps allow longer names
@@ -98,6 +115,22 @@ resource rg 'Microsoft.Resources/resourceGroups@2024-11-01' = {
   name: rgName_resolved
   location: location
   tags: tags
+}
+
+module appConfig 'modules/app_config.bicep' = {
+  name: 'appconfig'
+  scope: rg
+  params: {
+    appConfigName: appConfigName_resolved
+  }
+}
+
+module keyVault 'modules/key_vault.bicep' = {
+  name: 'keyvault'
+  scope: rg
+  params: {
+    keyVaultName: keyVaultName_resolved
+  }
 }
 
 // ----------------------------
@@ -193,9 +226,10 @@ module rbacAssignments 'modules/rbac.bicep' = {
     storageAccountName: storage.outputs.name
     appInsightsName: applicationInsights.outputs.name
     managedIdentityPrincipalId: functionApp.outputs.principalId
-
+    servicePrincipalId: servicePrincipalId
     userIdentityPrincipalId: principalId
     allowUserIdentityPrincipal: !empty(principalId)
+    appConfigName: appConfig.outputs.appConfigName
   }
 }
 
@@ -210,17 +244,18 @@ module policies 'modules/policy_assignment.bicep' = if(environmentName == 'dev')
 // ----------------------------
 // Outputs
 // ----------------------------
-output AZURE_LOCATION string = location
-output AZURE_TENANT_ID string = tenant().tenantId
-output RESOURCE_GROUP_NAME string = rg.name
-output STORAGE_ACCOUNT_NAME string = storage.outputs.name
-output LOG_ANALYTICS_NAME string = logAnalytics.outputs.name
-output APPLICATION_INSIGHTS_NAME string = applicationInsights.outputs.name
-output APPLICATIONINSIGHTS_CONNECTION_STRING string = applicationInsights.outputs.connectionString
-output AZURE_FUNCTION_NAME string = functionApp.outputs.name
-output FUNCTION_IDENTITY_PRINCIPAL_ID string = functionApp.outputs.principalId
-output DEPLOYMENT_BLOB_CONTAINER_URI string = deploymentBlobContainerUri
-// Add to outputs in main.bicep
+output azure_location string = location
+output azure_tenant_id string = tenant().tenantId
+output resource_group_name string = rg.name
+output storage_account_name string = storage.outputs.name
+output log_analytics_name string = logAnalytics.outputs.name
+output application_insights_name string = applicationInsights.outputs.name
+output applicationinsights_connection_string string = applicationInsights.outputs.connectionString
+output azure_function_name string = functionApp.outputs.name
+output function_app_id string = functionApp.outputs.principalId
+output deployment_blob_container_uri string = deploymentBlobContainerUri
+output app_config_name string = appConfig.outputs.appConfigName
+output app_config_endpoint string = appConfig.outputs.appConfigEnpoint
+output key_vault_name string = keyVault.name
 
-output HTTPS_POLICY_ASSIGNMENT_ID string = policies.outputs.httpsPolicyAssignmentId
-output HTTPS_POLICY_ASSIGNMENT_NAME string = policies.outputs.httpsPolicyAssignmentName
+

@@ -27,6 +27,7 @@ on:
 permissions:
   contents: read
   id-token: write
+  actions: write
 
 env:
   ENVIRONMENT: dev
@@ -72,7 +73,8 @@ jobs:
     outputs:
       resource_group: ${{ steps.deploy.outputs.RESOURCE_GROUP_NAME }}
       function_app: ${{ steps.deploy.outputs.AZURE_FUNCTION_NAME }}
-    
+      environment: ${{ env.ENVIRONMENT }}
+      app_config: ${{ steps.deploy.outputs.APP_CONFIG_NAME }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -85,6 +87,8 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_DEV }}
+          enable-AzPSSession: true
+          audience: 'api://AzureADTokenExchange'
 
       - name: Quick Template Validation
         # Minimal validation - full validation already happened in PR
@@ -121,22 +125,22 @@ jobs:
             --location eastus \
             --template-file main.bicep \
             --parameters environments/dev/main.bicepparam \
-            --no-wait
+            
           
           # Wait for completion and get outputs
           echo "Waiting for deployment to complete..."
-          OUTPUTS=$(az deployment sub wait \
+          OUTPUTS=$(az deployment sub show \
             --name "$DEPLOYMENT_NAME" \
-            --created \
             --query properties.outputs \
             -o json)
           
           # Extract outputs
-          RESOURCE_GROUP=$(echo "$OUTPUTS" | jq -r '.RESOURCE_GROUP_NAME.value')
-          FUNCTION_APP=$(echo "$OUTPUTS" | jq -r '.AZURE_FUNCTION_NAME.value')
+          RESOURCE_GROUP=$(echo "$OUTPUTS" | jq -r '.resource_group_name.value')
+          FUNCTION_APP=$(echo "$OUTPUTS" | jq -r '.azure_function_name.value')
           
           echo "RESOURCE_GROUP_NAME=$RESOURCE_GROUP" >> $GITHUB_OUTPUT
           echo "AZURE_FUNCTION_NAME=$FUNCTION_APP" >> $GITHUB_OUTPUT
+          echo "APP_CONFIG_NAME=$(echo "$OUTPUTS" | jq -r '.app_config_name.value')" >> $GITHUB_OUTPUT
           
           echo ""
           echo "✅ Deployment completed!"
@@ -163,6 +167,7 @@ jobs:
           
           RESOURCE_GROUP="${{ needs.deploy-infrastructure.outputs.resource_group }}"
           FUNCTION_APP="${{ needs.deploy-infrastructure.outputs.function_app }}"
+          APP_CONFIG="${{ needs.deploy-infrastructure.outputs.app_config }}"
           
           # Quick verification
           if az group exists --name "$RESOURCE_GROUP" --output tsv | grep -q "true"; then
@@ -221,3 +226,44 @@ jobs:
           echo "   - Security tab (code scanning alerts)"
           echo ""
           echo "🔗 Workflow Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+  
+  trigger-smoke-tests:
+    name: Trigger Smoke Tests
+    needs: [deploy-infrastructure, post-deployment-check]
+    if: success()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Trigger Smoke Tests Workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              console.log('Triggering smoke tests workflow...');
+              
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'infrastructure-smoke-tests.yml',
+                ref: 'develop',
+                inputs: {
+                  deployment_run_id: '${{ github.run_id }}',
+                  resource_group: '${{ needs.deploy-infrastructure.outputs.resource_group }}',
+                  function_app: '${{ needs.deploy-infrastructure.outputs.function_app }}',
+                  environment: '${{ needs.deploy-infrastructure.outputs.environment }}', 
+                  app_config: '${{ needs.deploy-infrastructure.outputs.app_config }}' 
+
+                }
+              });
+              
+              console.log('✅ Smoke tests triggered successfully');
+            } catch (error) {
+              console.log('⚠️ Could not trigger smoke tests:', error.message);
+              console.log('This is not a critical failure. Smoke tests can be run manually.');
+            }
+
+
+
+
+
+            

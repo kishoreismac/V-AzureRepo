@@ -1,0 +1,280 @@
+name: Infrastructure Deploy (Env)
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options: [dev, staging, prod]
+      location:
+        description: "Azure region"
+        required: false
+        default: "eastus"
+      reason:
+        description: "Why are you deploying?"
+        required: false
+        default: "manual"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: infra-deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  # ===========================
+  # 0) RESOLVE ENV + PARAMETERS
+  # ===========================
+  resolve:
+    name: Resolve Environment Inputs
+    runs-on: ubuntu-latest
+
+    outputs:
+      env: ${{ steps.o.outputs.env }}
+      subscription_id: ${{ steps.o.outputs.subscription_id }}
+      param_file: ${{ steps.o.outputs.param_file }}
+
+    steps:
+      - name: Resolve outputs
+        id: o
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ENV="${{ inputs.environment }}"
+          PARAM_FILE="environments/${ENV}/main.bicepparam"
+
+          # Map environment -> subscription secret name (no guessing at runtime)
+          # You must create these repository/environment secrets:
+          # AZURE_SUBSCRIPTION_ID_DEV, AZURE_SUBSCRIPTION_ID_STAGING, AZURE_SUBSCRIPTION_ID_PROD
+          case "$ENV" in
+            dev)     SUB="${{ secrets.AZURE_SUBSCRIPTION_ID_DEV }}" ;;
+            staging) SUB="${{ secrets.AZURE_SUBSCRIPTION_ID_STAGING }}" ;;
+            prod)    SUB="${{ secrets.AZURE_SUBSCRIPTION_ID_PROD }}" ;;
+            *) echo "❌ Invalid environment: $ENV" && exit 1 ;;
+          esac
+
+          if [ -z "${SUB}" ]; then
+            echo "❌ Subscription id secret is missing for env=$ENV"
+            exit 1
+          fi
+
+          echo "env=$ENV" >> "$GITHUB_OUTPUT"
+          echo "subscription_id=$SUB" >> "$GITHUB_OUTPUT"
+          echo "param_file=$PARAM_FILE" >> "$GITHUB_OUTPUT"
+
+          echo "✅ env=$ENV"
+          echo "✅ subscription_id set"
+          echo "✅ param_file=$PARAM_FILE"
+
+  # ===========================
+  # 1) DEPLOY INFRASTRUCTURE
+  # ===========================
+  deploy:
+    name: Deploy Infrastructure
+    runs-on: ubuntu-latest
+    needs: resolve
+    environment: ${{ inputs.environment }}
+
+    outputs:
+      resource_group: ${{ steps.out.outputs.resource_group }}
+      function_app: ${{ steps.out.outputs.function_app }}
+      app_config: ${{ steps.out.outputs.app_config }}
+      app_insights: ${{ steps.out.outputs.app_insights }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ needs.resolve.outputs.subscription_id }}
+          audience: api://AzureADTokenExchange
+
+      - name: Ensure Bicep available
+        shell: bash
+        run: |
+          set -euo pipefail
+          az bicep version || az bicep install
+
+      - name: Deploy (subscription-scope)
+        id: dep
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENV="${{ needs.resolve.outputs.env }}"
+          LOC="${{ inputs.location }}"
+          PARAM_FILE="${{ needs.resolve.outputs.param_file }}"
+
+          if [ ! -f "$PARAM_FILE" ]; then
+            echo "❌ Missing parameter file: $PARAM_FILE"
+            exit 1
+          fi
+
+          DEPLOY_NAME="infra-${ENV}-${{ github.run_id }}"
+
+          echo "=== DEPLOYING INFRA ==="
+          echo "env=$ENV"
+          echo "location=$LOC"
+          echo "deployment=$DEPLOY_NAME"
+          echo "params=$PARAM_FILE"
+
+          az deployment sub create \
+            --name "$DEPLOY_NAME" \
+            --location "$LOC" \
+            --template-file main.bicep \
+            --parameters @"$PARAM_FILE"
+
+          echo "DEPLOY_NAME=$DEPLOY_NAME" >> "$GITHUB_OUTPUT"
+          echo "✅ Infra deployment completed"
+
+      - name: Read deployment outputs (RG / Function / AppInsights / AppConfig)
+        id: out
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEPLOY_NAME="${{ steps.dep.outputs.DEPLOY_NAME }}"
+
+          # Your main.bicep already outputs these (based on what you shared):
+          RG=$(az deployment sub show --name "$DEPLOY_NAME" --query "properties.outputs.resource_group_name.value" -o tsv)
+          FA=$(az deployment sub show --name "$DEPLOY_NAME" --query "properties.outputs.azure_function_name.value" -o tsv)
+          AI=$(az deployment sub show --name "$DEPLOY_NAME" --query "properties.outputs.application_insights_name.value" -o tsv)
+          AC=$(az deployment sub show --name "$DEPLOY_NAME" --query "properties.outputs.app_config_name.value" -o tsv)
+
+          echo "Resolved outputs:"
+          echo "  RG=$RG"
+          echo "  FunctionApp=$FA"
+          echo "  AppInsights=$AI"
+          echo "  AppConfig=$AC"
+
+          if [ -z "$RG" ] || [ -z "$FA" ] || [ -z "$AI" ] || [ -z "$AC" ]; then
+            echo "❌ One or more outputs are empty. Check your Bicep outputs."
+            exit 1
+          fi
+
+          echo "resource_group=$RG" >> "$GITHUB_OUTPUT"
+          echo "function_app=$FA" >> "$GITHUB_OUTPUT"
+          echo "app_insights=$AI" >> "$GITHUB_OUTPUT"
+          echo "app_config=$AC" >> "$GITHUB_OUTPUT"
+
+      - name: Write infra contract to App Configuration (initial)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ENV="${{ needs.resolve.outputs.env }}"
+          RG="${{ steps.out.outputs.resource_group }}"
+          FA="${{ steps.out.outputs.function_app }}"
+          AI="${{ steps.out.outputs.app_insights }}"
+          AC="${{ steps.out.outputs.app_config }}"
+
+          echo "=== WRITING INFRA CONTRACT (PRE-SMOKE) ==="
+          echo "AppConfig: $AC"
+
+          # If this fails with "Cannot find a read write access key...",
+          # your deploying identity DOES NOT have App Config Data Owner/Data Contributor on that store.
+          az appconfig kv set -n "$AC" --key "InfraPipeline:Environment"        --value "$ENV" --auth-mode login --yes
+          az appconfig kv set -n "$AC" --key "InfraPipeline:ResourceGroupName"  --value "$RG"  --auth-mode login --yes
+          az appconfig kv set -n "$AC" --key "InfraPipeline:FunctionAppName"    --value "$FA"  --auth-mode login --yes
+          az appconfig kv set -n "$AC" --key "InfraPipeline:AppInsightsName"    --value "$AI"  --auth-mode login --yes
+          az appconfig kv set -n "$AC" --key "InfraPipeline:Status"             --value "DEPLOYED_PENDING_SMOKE" --auth-mode login --yes
+
+          echo "✅ Wrote infra contract (pending smoke)"
+
+  # ===========================
+  # 2) SMOKE TESTS (INFRA)
+  # ===========================
+  smoke:
+    name: Infra Smoke Tests + Mark COMPLETE
+    runs-on: ubuntu-latest
+    needs: deploy
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ needs.resolve.outputs.subscription_id }}
+          audience: api://AzureADTokenExchange
+
+      - name: Validate deployed resources exist + Function host resolves
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RG="${{ needs.deploy.outputs.resource_group }}"
+          FA="${{ needs.deploy.outputs.function_app }}"
+          AI="${{ needs.deploy.outputs.app_insights }}"
+          AC="${{ needs.deploy.outputs.app_config }}"
+
+          echo "=== INFRA SMOKE TESTS ==="
+          echo "RG=$RG"
+          echo "FunctionApp=$FA"
+          echo "AppInsights=$AI"
+          echo "AppConfig=$AC"
+          echo ""
+
+          echo "Check: resource group"
+          az group show -n "$RG" -o none
+
+          echo "Check: function app exists"
+          az resource show -g "$RG" -n "$FA" --resource-type "Microsoft.Web/sites" -o none
+
+          echo "Check: App Insights exists"
+          az resource show -g "$RG" -n "$AI" --resource-type "microsoft.insights/components" -o none
+
+          echo "Check: App Config exists"
+          az resource show -g "$RG" -n "$AC" --resource-type "Microsoft.AppConfiguration/configurationStores" -o none
+
+          echo "Waiting for Function hostname..."
+          HOST=""
+          for i in {1..18}; do
+            HOST=$(az resource show \
+              --resource-group "$RG" \
+              --name "$FA" \
+              --resource-type "Microsoft.Web/sites" \
+              --query "properties.defaultHostName" -o tsv 2>/dev/null || true)
+
+            echo "Attempt $i/18 -> host='$HOST'"
+            if [ -n "$HOST" ] && [ "$HOST" != "null" ]; then
+              break
+            fi
+            sleep 10
+          done
+
+          if [ -z "$HOST" ] || [ "$HOST" = "null" ]; then
+            echo "❌ Function defaultHostName still empty. This indicates a provisioning/config issue (not CI/CD logic)."
+            exit 1
+          fi
+
+          echo "✅ Host resolved: https://$HOST"
+
+      - name: Mark Infra CI/CD COMPLETE (App Config signal)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RG="${{ needs.deploy.outputs.resource_group }}"
+          FA="${{ needs.deploy.outputs.function_app }}"
+          AI="${{ needs.deploy.outputs.app_insights }}"
+          AC="${{ needs.deploy.outputs.app_config }}"
+          ENV="${{ inputs.environment }}"
+
+          echo "=== MARKING INFRA PIPELINE COMPLETE ==="
+          az appconfig kv set -n "$AC" --key "InfraPipeline:Status"            --value "COMPLETE" --auth-mode login --yes
+          az appconfig kv set -n "$AC" --key "InfraPipeline:ResourceGroupName" --value "$RG"      --auth-mode login --yes
+          az appconfig kv set -n "$AC" --key "InfraPipeline:FunctionAppName"   --value "$FA"      --auth-mode login --yes
+          az appconfig kv set -n "$AC" --key "InfraPipeline:AppInsightsName"   --value "$AI"      --auth-mode login --yes
+          az appconfig kv set -n "$AC" --key "InfraPipeline:Environment"       --value "$ENV"     --auth-mode login --yes
+
+          echo "✅ InfraPipeline:Status=COMPLETE"
+          echo "✅ App can now deploy using App Config contract"

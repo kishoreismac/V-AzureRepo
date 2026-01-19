@@ -5,6 +5,8 @@ param location = 'eastus'
 
 // Optional overrides (leave empty to auto-generate)
 param resourceGroupName = 'rg-prod-python'
+param appConfigName = 'appconfig-prod'
+param keyVaultName = 'kv-prod'
 param functionPlanName = 'plan-prod'
 param functionAppName = 'v-prod-python'
 param storageAccountName = 'vstorageprod'
@@ -24,3 +26,5 @@ param zoneRedundant = false
 
 // Optional: user objectId for dev/test access (leave empty for prod)
 param principalId = ''
+
+param servicePrincipalId =  '92af43c1-4683-4d2b-a014-ae6d79797454'
