@@ -14,6 +14,7 @@ param logAnalyticsName = 'v-la-sample-dev'
 param applicationInsightsName = 'v-appins-sample-dev'
 
 // Function runtime configuration
+
 param functionAppRuntime = 'python'
 param functionAppRuntimeVersion = '3.11'
 
