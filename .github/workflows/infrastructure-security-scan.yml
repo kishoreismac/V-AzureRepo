@@ -3,12 +3,11 @@ name: Infrastructure Security Scan
 on:
   pull_request:
     branches: [main, develop]
-  push:
-    branches: [main, develop]
     paths:
       - '*.bicep'
       - 'modules/**'
       - '.github/workflows/**'
+  workflow_dispatch:
 
 permissions:
   contents: read
