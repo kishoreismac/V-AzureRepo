@@ -163,7 +163,7 @@ jobs:
             --name "$DEPLOY_NAME" \
             --location "$LOC" \
             --template-file main.bicep \
-            --parameters @"$PARAM_FILE"
+            --parameters "$PARAM_FILE"
 
           echo "DEPLOY_NAME=$DEPLOY_NAME" >> "$GITHUB_OUTPUT"
           echo "✅ Infra deployment completed"
