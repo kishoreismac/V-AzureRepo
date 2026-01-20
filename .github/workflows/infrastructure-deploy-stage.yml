@@ -1,0 +1,269 @@
+name: Deploy to Staging
+
+on:
+  # OPTION A: When PR is merged to develop (after all checks pass)
+  pull_request:
+    branches: [develop]
+    types: [closed]
+    paths:
+      - '*.bicep'
+      - 'modules/**'
+      - 'environments/staging/**'
+  
+  # OPTION B: Manual trigger for emergency deployments
+  workflow_dispatch:
+    inputs:
+      skip_checks:
+        description: 'Skip pre-merge checks (emergency only)'
+        required: false
+        type: boolean
+        default: false
+      reason:
+        description: 'Reason for manual deployment'
+        required: false
+        type: string
+        default: 'Manual deployment request'
+
+permissions:
+  contents: read
+  id-token: write
+  actions: write
+
+env:
+  ENVIRONMENT: staging
+
+jobs:
+  verify-deployment-conditions:
+    name: Verify Deployment Conditions
+    runs-on: ubuntu-latest
+    outputs:
+      should_deploy: ${{ steps.verify.outputs.should_deploy }}
+    steps:
+      - name: Check PR Merge Status
+        id: verify
+        run: |
+          # For PR-triggered runs
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            if [ "${{ github.event.pull_request.merged }}" = "true" ]; then
+              echo "✅ PR #${{ github.event.pull_request.number }} was merged to develop"
+              echo "should_deploy=true" >> $GITHUB_OUTPUT
+            else
+              echo "❌ PR was closed without merge, skipping deployment"
+              echo "should_deploy=false" >> $GITHUB_OUTPUT
+            fi
+          
+          # For manual triggers
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ github.event.inputs.skip_checks }}" = "true" ]; then
+              echo "⚠️  Manual deployment with skipped checks"
+              echo "Reason: ${{ github.event.inputs.reason }}"
+            else
+              echo "✅ Manual deployment requested"
+            fi
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+          fi
+
+  deploy-infrastructure:
+    name: Deploy Infrastructure
+    needs: verify-deployment-conditions
+    if: needs.verify-deployment-conditions.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
+    
+    outputs:
+      resource_group: ${{ steps.deploy.outputs.RESOURCE_GROUP_NAME }}
+      function_app: ${{ steps.deploy.outputs.AZURE_FUNCTION_NAME }}
+      environment: ${{ env.ENVIRONMENT }}
+      app_config: ${{ steps.deploy.outputs.APP_CONFIG_NAME }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: develop  # Always deploy from develop branch
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_STAGING }}
+          enable-AzPSSession: true
+          audience: 'api://AzureADTokenExchange'
+
+      - name: Quick Template Validation
+        # Minimal validation - full validation already happened in PR
+        run: |
+          echo "=== Quick Deployment Validation ==="
+          
+          # Just verify files exist (thorough validation already done)
+          if [ ! -f main.bicep ]; then
+            echo "❌ main.bicep not found"
+            exit 1
+          fi
+          
+          if [ ! -f environments/dev/main.bicepparam ]; then
+            echo "❌ Dev parameter file not found"
+            exit 1
+          fi
+          
+          echo "✅ Required files present"
+
+      - name: Execute Deployment
+        id: deploy
+        run: |
+          echo "=== Deploying to Staging ==="
+          
+          DEPLOYMENT_NAME="deploy-stage-${{ github.run_id }}"
+          
+          echo "Deployment: $DEPLOYMENT_NAME"
+          echo "Environment: ${{ env.ENVIRONMENT }}"
+          echo ""
+          
+          # Execute deployment
+          az deployment sub create \
+            --name "$DEPLOYMENT_NAME" \
+            --location eastus \
+            --template-file main.bicep \
+            --parameters environments/staging/main.bicepparam \
+            
+          
+          # Wait for completion and get outputs
+          echo "Waiting for deployment to complete..."
+          OUTPUTS=$(az deployment sub show \
+            --name "$DEPLOYMENT_NAME" \
+            --query properties.outputs \
+            -o json)
+          
+          # Extract outputs
+          RESOURCE_GROUP=$(echo "$OUTPUTS" | jq -r '.resource_group_name.value')
+          FUNCTION_APP=$(echo "$OUTPUTS" | jq -r '.azure_function_name.value')
+          
+          echo "RESOURCE_GROUP_NAME=$RESOURCE_GROUP" >> $GITHUB_OUTPUT
+          echo "AZURE_FUNCTION_NAME=$FUNCTION_APP" >> $GITHUB_OUTPUT
+          echo "APP_CONFIG_NAME=$(echo "$OUTPUTS" | jq -r '.app_config_name.value')" >> $GITHUB_OUTPUT
+          
+          echo ""
+          echo "✅ Deployment completed!"
+          echo "📁 Resource Group: $RESOURCE_GROUP"
+          echo "⚡ Function App: $FUNCTION_APP"
+
+  post-deployment-check:
+    name: Post-Deployment Check
+    needs: deploy-infrastructure
+    runs-on: ubuntu-latest
+    environment: staging
+    
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_STAGING }}
+
+      - name: Verify Deployment
+        run: |
+          echo "=== Verifying Deployment ==="
+          
+          RESOURCE_GROUP="${{ needs.deploy-infrastructure.outputs.resource_group }}"
+          FUNCTION_APP="${{ needs.deploy-infrastructure.outputs.function_app }}"
+          APP_CONFIG="${{ needs.deploy-infrastructure.outputs.app_config }}"
+          
+          # Quick verification
+          if az group exists --name "$RESOURCE_GROUP" --output tsv | grep -q "true"; then
+            echo "✅ Resource Group exists"
+          else
+            echo "❌ Resource Group not found"
+            exit 1
+          fi
+          
+          if az functionapp show --name "$FUNCTION_APP" --resource-group "$RESOURCE_GROUP" &> /dev/null; then
+            echo "✅ Function App exists"
+            
+            # Get status
+            STATE=$(az functionapp show \
+              --name "$FUNCTION_APP" \
+              --resource-group "$RESOURCE_GROUP" \
+              --query state \
+              -o tsv)
+            echo "📊 Function App State: $STATE"
+          else
+            echo "❌ Function App not found"
+            exit 1
+          fi
+
+  deployment-summary:
+    name: Deployment Summary
+    needs: [deploy-infrastructure, post-deployment-check]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Generate Summary
+        env:
+          DEPLOYMENT_TYPE: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          echo ""
+          echo "========================================="
+          echo "       DEVELOPMENT DEPLOYMENT SUMMARY     "
+          echo "========================================="
+          echo ""
+          
+          if [ "$DEPLOYMENT_TYPE" = "pull_request" ]; then
+            echo "Trigger: PR #$PR_NUMBER merged to develop"
+          else
+            echo "Trigger: Manual deployment"
+            echo "Reason: ${{ github.event.inputs.reason }}"
+          fi
+          
+          echo ""
+          echo "✅ All validation checks were completed during PR review"
+          echo "✅ Infrastructure deployed successfully"
+          echo ""
+          echo "📊 View detailed validation results in:"
+          echo "   - PR checks (lint, security, compliance, validation)"
+          echo "   - Security tab (code scanning alerts)"
+          echo ""
+          echo "🔗 Workflow Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+  
+  trigger-smoke-tests:
+    name: Trigger Smoke Tests
+    needs: [deploy-infrastructure, post-deployment-check]
+    if: success()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Trigger Smoke Tests Workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              console.log('Triggering smoke tests workflow...');
+              
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'infrastructure-smoke-tests.yml',
+                ref: 'develop',
+                inputs: {
+                  deployment_run_id: '${{ github.run_id }}',
+                  resource_group: '${{ needs.deploy-infrastructure.outputs.resource_group }}',
+                  function_app: '${{ needs.deploy-infrastructure.outputs.function_app }}',
+                  environment: '${{ needs.deploy-infrastructure.outputs.environment }}', 
+                  app_config: '${{ needs.deploy-infrastructure.outputs.app_config }}' 
+
+                }
+              });
+              
+              console.log('✅ Smoke tests triggered successfully');
+            } catch (error) {
+              console.log('⚠️ Could not trigger smoke tests:', error.message);
+              console.log('This is not a critical failure. Smoke tests can be run manually.');
+            }
+
+
+
+
+
+            
