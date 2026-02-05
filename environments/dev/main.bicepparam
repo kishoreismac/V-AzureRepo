@@ -9,7 +9,7 @@ param appConfigName = 'appconfig-vsample-dev'
 param keyVaultName = 'kv-vsample-dev'
 param functionPlanName = 'plan-dev'
 param functionAppName = 'v-sample-python-dev'
-param storageAccountName = 'vstoragesampledev'
+param storageAccountName = 'vsrestorageeaudev'
 param logAnalyticsName = 'v-la-sample-dev'
 param applicationInsightsName = 'v-appins-sample-dev'
 
